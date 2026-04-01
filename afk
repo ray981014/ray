@@ -145,4 +145,4 @@ Player.Idled:Connect(function()
     VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
 end)
 
-print("🚀 優化掛機系統已啟動 | 快捷鍵: K")
+print("掛機腳本已啟動")
