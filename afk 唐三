@@ -1,0 +1,148 @@
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local UIS = game:GetService("UserInputService")
+local Players = game:GetService("Players")
+local Stats = game:GetService("Stats")
+local HttpService = game:GetService("HttpService")
+local GuiService = game:GetService("GuiService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local VirtualUser = game:GetService("VirtualUser")
+
+local Player = Players.LocalPlayer
+local StartTime = os.time()
+local WebhookURL = "https://discord.com/api/webhooks/1488201129324970097/YUnJiHbrbiOnieKAIPZFe70irtwa0Kw85ODMUi6Rr_SbMUO2O4FqJqW1g0Eefv0v5IE0"
+local MyDiscordID = "1208227712242548786"
+local HasSentDisconnect = false
+
+local PlaceName = "未知遊戲"
+pcall(function()
+    PlaceName = MarketplaceService:GetProductInfo(game.PlaceId).Name
+end)
+
+local ScreenGui = Instance.new("ScreenGui", CoreGui)
+ScreenGui.Name = "PowerSaving_System"
+ScreenGui.Enabled = false
+ScreenGui.IgnoreGuiInset = true
+
+local BG = Instance.new("Frame", ScreenGui)
+BG.Size = UDim2.new(1, 0, 1, 0)
+BG.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
+BG.BorderSizePixel = 0
+
+local Center = Instance.new("Frame", BG)
+Center.Size = UDim2.new(0, 450, 0, 180)
+Center.Position = UDim2.new(0.5, -225, 0.5, -90)
+Center.BackgroundTransparency = 1
+
+local TimeLabel = Instance.new("TextLabel", Center)
+TimeLabel.Size = UDim2.new(1, 0, 0.6, 0)
+TimeLabel.Text = "00 : 00 : 00"
+TimeLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+TimeLabel.TextSize = 42 -- 調整為與新風格一致的大小
+TimeLabel.Font = Enum.Font.BuilderSans -- 換成 BuilderSans 字體
+TimeLabel.BackgroundTransparency = 1
+
+local PingLabel = Instance.new("TextLabel", Center)
+PingLabel.Size = UDim2.new(1, 0, 0.2, 0)
+PingLabel.Position = UDim2.new(0, 0, 0.6, 0)
+PingLabel.Text = "PING: -- ms"
+PingLabel.TextColor3 = Color3.fromRGB()
+PingLabel.TextSize = 20
+PingLabel.Font = Enum.Font.SourceSansBold
+PingLabel.BackgroundTransparency = 1
+
+local StatusLabel = Instance.new("TextLabel", Center)
+StatusLabel.Size = UDim2.new(1, 0, 0.2, 0)
+StatusLabel.Position = UDim2.new(0, 0, 0.8, 0)
+StatusLabel.Text = "省電模式運行中"
+StatusLabel.TextColor3 = Color3.fromRGB(150, 150, 150)
+StatusLabel.TextSize = 16
+StatusLabel.Font = Enum.Font.SourceSansItalic
+StatusLabel.BackgroundTransparency = 1
+
+local function FormatTime(seconds)
+    return string.format("%02d時 %02d分 %02d秒", math.floor(seconds/3600), math.floor((seconds%3600)/60), seconds%60)
+end
+
+local function SendDiscordNotification(errorMessage)
+    if HasSentDisconnect then return end
+    HasSentDisconnect = true
+    
+    local PlayTime = FormatTime(os.time() - StartTime)
+    local Data = {
+        ["content"] = "<@" .. MyDiscordID .. "> ⚠️ 帳號已斷線！",
+        ["embeds"] = {{
+            ["title"] = "🔴 斷線報告: " .. PlaceName,
+            ["color"] = 16711680,
+            ["fields"] = {
+                {["name"] = "玩家", ["value"] = Player.Name .. " (" .. Player.UserId .. ")", ["inline"] = true},
+                {["name"] = "遊玩時長", ["value"] = PlayTime, ["inline"] = true},
+                {["name"] = "錯誤原因", ["value"] = "```" .. (errorMessage or "無提供錯誤訊息") .. "```", ["inline"] = false},
+                {["name"] = "Server ID", ["value"] = "```" .. game.JobId .. "```", ["inline"] = false}
+            },
+            ["timestamp"] = os.date("!%Y-%m-%dT%H:%M:%SZ")
+        }}
+    }
+
+    pcall(function()
+        local req = (syn and syn.request) or (http and http.request) or http_request or request
+        if req then
+            req({
+                Url = WebhookURL,
+                Method = "POST",
+                Headers = {["Content-Type"] = "application/json"},
+                Body = HttpService:JSONEncode(Data)
+            })
+        end
+    end)
+end
+
+local function SetPowerSaving(mode)
+    ScreenGui.Enabled = mode
+    if mode then
+        if setfpscap then setfpscap(10) end
+        RunService:Set3dRenderingEnabled(false)
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+        if collectgarbage then collectgarbage("collect") end
+    else
+        if setfpscap then setfpscap(144) end
+        RunService:Set3dRenderingEnabled(true)
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
+    end
+end
+
+task.spawn(function()
+    while true do
+        if ScreenGui.Enabled then
+            local diff = os.time() - StartTime
+            TimeLabel.Text = string.format("%02d : %02d : %02d", math.floor(diff/3600), math.floor((diff%3600)/60), diff%60)
+            local ping = "N/A"
+            pcall(function()
+                ping = math.floor(Stats.Network.ServerStatsItem["Data Ping"]:GetValue())
+            end)
+            PingLabel.Text = "PING: " .. ping .. " ms"
+        end
+        task.wait(1)
+    end
+end)
+
+UIS.InputBegan:Connect(function(input, processed)
+    if not processed and input.KeyCode == Enum.KeyCode.K then
+        SetPowerSaving(not ScreenGui.Enabled)
+    end
+end)
+
+GuiService.ErrorMessageChanged:Connect(function()
+    local msg = GuiService:GetErrorMessage()
+    if msg and #msg > 0 then
+        SendDiscordNotification(msg)
+    end
+end)
+
+Player.Idled:Connect(function()
+    VirtualUser:Button2Down(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+    task.wait(0.5)
+    VirtualUser:Button2Up(Vector2.new(0,0), workspace.CurrentCamera.CFrame)
+end)
+
+print("掛機腳本已啟動")
