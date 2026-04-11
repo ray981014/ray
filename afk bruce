@@ -105,7 +105,7 @@ local function SetPowerSaving(mode)
         settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
         if collectgarbage then collectgarbage("collect") end
     else
-        if setfpscap then setfpscap(144) end
+        if setfpscap then setfpscap(60) end
         RunService:Set3dRenderingEnabled(true)
         settings().Rendering.QualityLevel = Enum.QualityLevel.Automatic
     end
