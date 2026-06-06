@@ -1,0 +1,204 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local player = Players.LocalPlayer
+local pGui = player:WaitForChild("PlayerGui")
+
+local currentState = "Idle"
+local targetPlayer = nil
+local targetCFrame = nil
+
+local sg = Instance.new("ScreenGui", pGui)
+sg.Name = "UltimateControlUI"
+sg.ResetOnSpawn = false
+
+local main = Instance.new("Frame", sg)
+main.Size = UDim2.new(0, 220, 0, 360)
+main.Position = UDim2.new(0, 20, 0.5, -180)
+main.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+main.BackgroundTransparency = 0.1
+main.BorderSizePixel = 0
+
+local title = Instance.new("TextLabel", main)
+title.Text = "tp"
+title.Size = UDim2.new(1, 0, 0, 35)
+title.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+title.TextColor3 = Color3.new(1, 1, 1)
+title.TextSize = 16
+
+local playerFrame = Instance.new("ScrollingFrame", main)
+playerFrame.Size = UDim2.new(1, -20, 0, 160)
+playerFrame.Position = UDim2.new(0, 10, 0, 45)
+playerFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+playerFrame.BorderSizePixel = 0
+playerFrame.ScrollBarThickness = 4
+
+local pLayout = Instance.new("UIListLayout", playerFrame)
+pLayout.Padding = UDim.new(0, 4)
+
+local posFrame = Instance.new("Frame", main)
+posFrame.Size = UDim2.new(1, -20, 0, 100)
+posFrame.Position = UDim2.new(0, 10, 0, 210)
+posFrame.BackgroundTransparency = 1
+
+local posInput = Instance.new("TextBox", posFrame)
+posInput.PlaceholderText = "輸入座標 (X, Y, Z)"
+posInput.Size = UDim2.new(1, 0, 0, 30)
+posInput.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+posInput.TextColor3 = Color3.new(1, 1, 1)
+
+local getPosBtn = Instance.new("TextButton", posFrame)
+getPosBtn.Text = "📍 抓取並複製目前座標"
+getPosBtn.Size = UDim2.new(1, 0, 0, 30)
+getPosBtn.Position = UDim2.new(0, 0, 0, 35)
+getPosBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 60)
+getPosBtn.TextColor3 = Color3.new(1, 1, 1)
+
+local startPosBtn = Instance.new("TextButton", posFrame)
+startPosBtn.Text = "🚀 飛往指定座標"
+startPosBtn.Size = UDim2.new(1, 0, 0, 30)
+startPosBtn.Position = UDim2.new(0, 0, 0, 70)
+startPosBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 120)
+startPosBtn.TextColor3 = Color3.new(1, 1, 1)
+
+local stopBtn = Instance.new("TextButton", main)
+stopBtn.Text = "🛑 停止所有動作 (恢復碰撞)"
+stopBtn.Size = UDim2.new(1, -20, 0, 35)
+stopBtn.Position = UDim2.new(0, 10, 1, -45)
+stopBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
+stopBtn.TextColor3 = Color3.new(1, 1, 1)
+
+
+local dragging
+local dragInput
+local dragStart
+local startPos
+
+local function update(input)
+    local delta = input.Position - dragStart
+    main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = main.Position
+        
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                dragging = false
+            end
+        end)
+    end
+end)
+
+title.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        dragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == dragInput and dragging then
+        update(input)
+    end
+end)
+
+local function updatePlayerList()
+    for _, child in pairs(playerFrame:GetChildren()) do if child:IsA("TextButton") then child:Destroy() end end
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= player then
+            local btn = Instance.new("TextButton", playerFrame)
+            btn.Text = "👤 " .. p.DisplayName
+            btn.Size = UDim2.new(1, -6, 0, 28)
+            btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+            btn.TextColor3 = Color3.new(1, 1, 1)
+            btn.TextSize = 12
+            
+            btn.MouseButton1Click:Connect(function()
+                targetPlayer = p
+                currentState = "Follow"
+                print("［狀態變更］開始追蹤玩家: " .. p.Name)
+            end)
+        end
+    end
+    playerFrame.CanvasSize = UDim2.new(0, 0, 0, pLayout.AbsoluteContentSize.Y)
+end
+
+local function parseCoords(text)
+    local x, y, z = text:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
+    if x and y and z then return tonumber(x), tonumber(y), tonumber(z) end
+    return nil
+end
+
+getPosBtn.MouseButton1Click:Connect(function()
+    local myRoot = player.Character and player.Character:FindFirstChild("HumanoidRootPart")
+    if myRoot then
+        local text = string.format("%.1f, %.1f, %.1f", myRoot.Position.X, myRoot.Position.Y, myRoot.Position.Z)
+        posInput.Text = text
+        if setclipboard then setclipboard(text) end
+        getPosBtn.Text = "✅ 座標已複製！"
+        task.wait(1)
+        getPosBtn.Text = "📍 抓取並複製目前座標"
+    end
+end)
+
+startPosBtn.MouseButton1Click:Connect(function()
+    local x, y, z = parseCoords(posInput.Text)
+    if x and y and z then
+        targetCFrame = CFrame.new(x, y, z)
+        currentState = "GoToPos"
+        print("［狀態變更］開始飛往座標點")
+    else
+        posInput.Text = "格式錯誤！需用逗號隔開"
+    end
+end)
+
+stopBtn.MouseButton1Click:Connect(function()
+    currentState = "Idle"
+    targetPlayer = nil
+    targetCFrame = nil
+    print("［狀態變更］已中止所有自動位移")
+end)
+
+RunService.Stepped:Connect(function()
+    if currentState == "Idle" then return end
+    
+    local myChar = player.Character
+    local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
+    
+    for _, part in pairs(myChar:GetDescendants()) do
+        if part:IsA("BasePart") then part.CanCollide = false end
+    end
+    myRoot.Velocity = Vector3.new(0, 0, 0)
+    
+    if currentState == "Follow" and targetPlayer then
+        local tChar = targetPlayer.Character
+        local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
+        
+        if tRoot then
+            local goal = tRoot.CFrame * CFrame.new(0, 5, 2)
+            myRoot.CFrame = myRoot.CFrame:Lerp(goal, 0.15)
+        else
+            local pivot = targetPlayer:GetPivot()
+            if pivot then myRoot.CFrame = pivot * CFrame.new(0, 5, 0) end
+        end
+        
+
+    elseif currentState == "GoToPos" and targetCFrame then
+        local distance = (myRoot.Position - targetCFrame.Position).Magnitude
+        if distance > 60 then
+            myRoot.CFrame = targetCFrame 
+        else
+            myRoot.CFrame = myRoot.CFrame:Lerp(targetCFrame, 0.2)
+        end
+    end
+end)
+
+Players.PlayerAdded:Connect(updatePlayerList)
+Players.PlayerRemoving:Connect(updatePlayerList)
+updatePlayerList()
+
+print("載入完成")
