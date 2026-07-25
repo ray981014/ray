@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
+
 local player = Players.LocalPlayer
 local pGui = player:WaitForChild("PlayerGui")
 
@@ -8,76 +9,166 @@ local currentState = "Idle"
 local targetPlayer = nil
 local targetCFrame = nil
 
-local sg = Instance.new("ScreenGui", pGui)
+-- 好友快取，避免重複呼叫 API
+local friendCache = {}
+
+-- 輔助函式：判斷字串開頭類型（1: 英文字母, 2: 數字, 3: 中文/其他）
+local function getNameCategory(name)
+    local firstChar = name:sub(1, 1)
+    if firstChar:find("%a") then
+        return 1
+    elseif firstChar:find("%d") then
+        return 2
+    else
+        return 3
+    end
+end
+
+-- 輔助函式：檢查是否為好友（非同步）
+local function checkIsFriend(targetP)
+    if friendCache[targetP.UserId] ~= nil then
+        return friendCache[targetP.UserId]
+    end
+    
+    local success, isFriend = pcall(function()
+        return player:IsFriendsWith(targetP.UserId)
+    end)
+    
+    if success then
+        friendCache[targetP.UserId] = isFriend
+        return isFriend
+    end
+    return false
+end
+
+-- 建立主 GUI
+local sg = Instance.new("ScreenGui")
 sg.Name = "UltimateControlUI"
 sg.ResetOnSpawn = false
+sg.Parent = pGui
 
-local main = Instance.new("Frame", sg)
-main.Size = UDim2.new(0, 220, 0, 360)
-main.Position = UDim2.new(0, 20, 0.5, -180)
-main.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-main.BackgroundTransparency = 0.1
+local main = Instance.new("Frame")
+main.Name = "MainFrame"
+main.Size = UDim2.new(0, 240, 0, 390)
+main.Position = UDim2.new(0, 20, 0.5, -195)
+main.BackgroundColor3 = Color3.fromRGB(24, 24, 28)
 main.BorderSizePixel = 0
+main.Parent = sg
 
-local title = Instance.new("TextLabel", main)
-title.Text = "tp"
-title.Size = UDim2.new(1, 0, 0, 35)
-title.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-title.TextColor3 = Color3.new(1, 1, 1)
-title.TextSize = 16
+local mainCorner = Instance.new("UICorner")
+mainCorner.CornerRadius = UDim.new(0, 10)
+mainCorner.Parent = main
 
-local playerFrame = Instance.new("ScrollingFrame", main)
-playerFrame.Size = UDim2.new(1, -20, 0, 160)
-playerFrame.Position = UDim2.new(0, 10, 0, 45)
-playerFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 20)
+-- 標題欄
+local title = Instance.new("TextLabel")
+title.Name = "TitleBar"
+title.Text = "        tp"
+title.Size = UDim2.new(1, 0, 0, 38)
+title.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+title.TextColor3 = Color3.fromRGB(240, 240, 240)
+title.TextSize = 14
+title.Font = Enum.Font.GothamBold
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = main
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 10)
+titleCorner.Parent = title
+
+-- 玩家選擇清單區域
+local playerFrame = Instance.new("ScrollingFrame")
+playerFrame.Name = "PlayerList"
+playerFrame.Size = UDim2.new(1, -20, 0, 170)
+playerFrame.Position = UDim2.new(0, 10, 0, 48)
+playerFrame.BackgroundColor3 = Color3.fromRGB(16, 16, 20)
 playerFrame.BorderSizePixel = 0
-playerFrame.ScrollBarThickness = 4
+playerFrame.ScrollBarThickness = 3
+playerFrame.ScrollBarImageColor3 = Color3.fromRGB(80, 80, 100)
+playerFrame.Parent = main
 
-local pLayout = Instance.new("UIListLayout", playerFrame)
+local pfCorner = Instance.new("UICorner")
+pfCorner.CornerRadius = UDim.new(0, 6)
+pfCorner.Parent = playerFrame
+
+local pLayout = Instance.new("UIListLayout")
 pLayout.Padding = UDim.new(0, 4)
+pLayout.SortOrder = Enum.SortOrder.LayoutOrder
+pLayout.Parent = playerFrame
 
-local posFrame = Instance.new("Frame", main)
-posFrame.Size = UDim2.new(1, -20, 0, 100)
-posFrame.Position = UDim2.new(0, 10, 0, 210)
+local pPadding = Instance.new("UIPadding")
+pPadding.PaddingTop = UDim.new(0, 4)
+pPadding.PaddingBottom = UDim.new(0, 4)
+pPadding.PaddingLeft = UDim.new(0, 4)
+pPadding.PaddingRight = UDim.new(0, 4)
+pPadding.Parent = playerFrame
+
+-- 座標控制區域
+local posFrame = Instance.new("Frame")
+posFrame.Size = UDim2.new(1, -20, 0, 105)
+posFrame.Position = UDim2.new(0, 10, 0, 226)
 posFrame.BackgroundTransparency = 1
+posFrame.Parent = main
 
-local posInput = Instance.new("TextBox", posFrame)
+local posInput = Instance.new("TextBox")
 posInput.PlaceholderText = "輸入座標 (X, Y, Z)"
-posInput.Size = UDim2.new(1, 0, 0, 30)
-posInput.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-posInput.TextColor3 = Color3.new(1, 1, 1)
+posInput.Text = ""
+posInput.Size = UDim2.new(1, 0, 0, 32)
+posInput.BackgroundColor3 = Color3.fromRGB(34, 34, 40)
+posInput.TextColor3 = Color3.fromRGB(240, 240, 240)
+posInput.PlaceholderColor3 = Color3.fromRGB(120, 120, 140)
+posInput.Font = Enum.Font.Gotham
+posInput.TextSize = 12
+posInput.Parent = posFrame
 
-local getPosBtn = Instance.new("TextButton", posFrame)
+local inputCorner = Instance.new("UICorner")
+inputCorner.CornerRadius = UDim.new(0, 6)
+inputCorner.Parent = posInput
+
+local getPosBtn = Instance.new("TextButton")
 getPosBtn.Text = "📍 抓取並複製目前座標"
-getPosBtn.Size = UDim2.new(1, 0, 0, 30)
-getPosBtn.Position = UDim2.new(0, 0, 0, 35)
-getPosBtn.BackgroundColor3 = Color3.fromRGB(60, 100, 60)
-getPosBtn.TextColor3 = Color3.new(1, 1, 1)
+getPosBtn.Size = UDim2.new(1, 0, 0, 32)
+getPosBtn.Position = UDim2.new(0, 0, 0, 38)
+getPosBtn.BackgroundColor3 = Color3.fromRGB(46, 125, 80)
+getPosBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+getPosBtn.Font = Enum.Font.GothamMedium
+getPosBtn.TextSize = 12
+getPosBtn.Parent = posFrame
 
-local startPosBtn = Instance.new("TextButton", posFrame)
+local getPosCorner = Instance.new("UICorner")
+getPosCorner.CornerRadius = UDim.new(0, 6)
+getPosCorner.Parent = getPosBtn
+
+local startPosBtn = Instance.new("TextButton")
 startPosBtn.Text = "🚀 飛往指定座標"
-startPosBtn.Size = UDim2.new(1, 0, 0, 30)
-startPosBtn.Position = UDim2.new(0, 0, 0, 70)
-startPosBtn.BackgroundColor3 = Color3.fromRGB(60, 60, 120)
-startPosBtn.TextColor3 = Color3.new(1, 1, 1)
+startPosBtn.Size = UDim2.new(1, 0, 0, 32)
+startPosBtn.Position = UDim2.new(0, 0, 0, 74)
+startPosBtn.BackgroundColor3 = Color3.fromRGB(58, 80, 160)
+startPosBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+startPosBtn.Font = Enum.Font.GothamMedium
+startPosBtn.TextSize = 12
+startPosBtn.Parent = posFrame
 
-local stopBtn = Instance.new("TextButton", main)
-stopBtn.Text = "🛑 停止所有動作 (恢復碰撞)"
-stopBtn.Size = UDim2.new(1, -20, 0, 35)
-stopBtn.Position = UDim2.new(0, 10, 1, -45)
-stopBtn.BackgroundColor3 = Color3.fromRGB(150, 40, 40)
-stopBtn.TextColor3 = Color3.new(1, 1, 1)
+local startPosCorner = Instance.new("UICorner")
+startPosCorner.CornerRadius = UDim.new(0, 6)
+startPosCorner.Parent = startPosBtn
 
+-- 停止按鈕
+local stopBtn = Instance.new("TextButton")
+stopBtn.Text = "🛑 停止所有動作"
+stopBtn.Size = UDim2.new(1, -20, 0, 36)
+stopBtn.Position = UDim2.new(0, 10, 1, -44)
+stopBtn.BackgroundColor3 = Color3.fromRGB(175, 50, 50)
+stopBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+stopBtn.Font = Enum.Font.GothamBold
+stopBtn.TextSize = 13
+stopBtn.Parent = main
 
-local dragging
-local dragInput
-local dragStart
-local startPos
+local stopCorner = Instance.new("UICorner")
+stopCorner.CornerRadius = UDim.new(0, 6)
+stopCorner.Parent = stopBtn
 
-local function update(input)
-    local delta = input.Position - dragStart
-    main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-end
+-- 拖曳選單邏輯
+local dragging, dragStart, startPos, dragInput
 
 title.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -101,31 +192,80 @@ end)
 
 UserInputService.InputChanged:Connect(function(input)
     if input == dragInput and dragging then
-        update(input)
+        local delta = input.Position - dragStart
+        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
     end
 end)
 
+-- 更新玩家清單與排序 logic
 local function updatePlayerList()
-    for _, child in pairs(playerFrame:GetChildren()) do if child:IsA("TextButton") then child:Destroy() end end
+    for _, child in pairs(playerFrame:GetChildren()) do
+        if child:IsA("TextButton") then 
+            child:Destroy() 
+        end 
+    end
+
+    local otherPlayers = {}
     for _, p in pairs(Players:GetPlayers()) do
         if p ~= player then
-            local btn = Instance.new("TextButton", playerFrame)
-            btn.Text = "👤 " .. p.DisplayName
-            btn.Size = UDim2.new(1, -6, 0, 28)
-            btn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-            btn.TextColor3 = Color3.new(1, 1, 1)
-            btn.TextSize = 12
-            
-            btn.MouseButton1Click:Connect(function()
-                targetPlayer = p
-                currentState = "Follow"
-                print("［狀態變更］開始追蹤玩家: " .. p.Name)
-            end)
+            table.insert(otherPlayers, p)
         end
     end
-    playerFrame.CanvasSize = UDim2.new(0, 0, 0, pLayout.AbsoluteContentSize.Y)
+
+    -- 排序權重：1. 好友 -> 2. 英文字母 -> 3. 數字 -> 4. 中文/其他
+    table.sort(otherPlayers, function(a, b)
+        local aIsFriend = checkIsFriend(a)
+        local bIsFriend = checkIsFriend(b)
+
+        if aIsFriend ~= bIsFriend then
+            return aIsFriend -- 好友優先
+        end
+
+        local catA = getNameCategory(a.DisplayName)
+        local catB = getNameCategory(b.DisplayName)
+
+        if catA ~= catB then
+            return catA < catB -- 字元類別優先度
+        end
+
+        return a.DisplayName:lower() < b.DisplayName:lower()
+    end)
+
+    -- 產生按鈕
+    for idx, p in ipairs(otherPlayers) do
+        local isFriend = checkIsFriend(p)
+        local prefix = isFriend and "⭐ " or "👤 "
+
+        local btn = Instance.new("TextButton")
+        btn.Name = "Player_" .. p.UserId
+        btn.Text = " " .. prefix .. p.DisplayName .. " (@" .. p.Name .. ")"
+        btn.Size = UDim2.new(1, 0, 0, 28)
+        
+        -- 好友背景改為深綠背景，文字改為亮綠色
+        btn.BackgroundColor3 = isFriend and Color3.fromRGB(30, 55, 38) or Color3.fromRGB(30, 30, 36)
+        btn.TextColor3 = isFriend and Color3.fromRGB(100, 240, 130) or Color3.fromRGB(220, 220, 220)
+        
+        btn.TextSize = 11
+        btn.Font = Enum.Font.Gotham
+        btn.TextXAlignment = Enum.TextXAlignment.Left
+        btn.LayoutOrder = idx
+        btn.Parent = playerFrame
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 4)
+        btnCorner.Parent = btn
+
+        btn.MouseButton1Click:Connect(function()
+            targetPlayer = p
+            currentState = "Follow"
+            print("［狀態變更］開始追蹤玩家: " .. p.Name)
+        end)
+    end
+
+    playerFrame.CanvasSize = UDim2.new(0, 0, 0, pLayout.AbsoluteContentSize.Y + 8)
 end
 
+-- 座標解析
 local function parseCoords(text)
     local x, y, z = text:match("([^,]+)%s*,%s*([^,]+)%s*,%s*([^,]+)")
     if x and y and z then return tonumber(x), tonumber(y), tonumber(z) end
@@ -162,22 +302,23 @@ stopBtn.MouseButton1Click:Connect(function()
     print("［狀態變更］已中止所有自動位移")
 end)
 
+-- 位置更新循環
 RunService.Stepped:Connect(function()
     if currentState == "Idle" then return end
-    
+
     local myChar = player.Character
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
-    
+
     for _, part in pairs(myChar:GetDescendants()) do
         if part:IsA("BasePart") then part.CanCollide = false end
     end
     myRoot.Velocity = Vector3.new(0, 0, 0)
-    
+
     if currentState == "Follow" and targetPlayer then
         local tChar = targetPlayer.Character
         local tRoot = tChar and tChar:FindFirstChild("HumanoidRootPart")
-        
+
         if tRoot then
             local goal = tRoot.CFrame * CFrame.new(0, 5, 2)
             myRoot.CFrame = myRoot.CFrame:Lerp(goal, 0.15)
@@ -185,7 +326,6 @@ RunService.Stepped:Connect(function()
             local pivot = targetPlayer:GetPivot()
             if pivot then myRoot.CFrame = pivot * CFrame.new(0, 5, 0) end
         end
-        
 
     elseif currentState == "GoToPos" and targetCFrame then
         local distance = (myRoot.Position - targetCFrame.Position).Magnitude
@@ -197,8 +337,10 @@ RunService.Stepped:Connect(function()
     end
 end)
 
+-- 監聽玩家加入/離開
 Players.PlayerAdded:Connect(updatePlayerList)
 Players.PlayerRemoving:Connect(updatePlayerList)
-updatePlayerList()
 
-print("載入完成")
+-- 初始載入
+task.spawn(updatePlayerList)
+print("UI 載入完成")
