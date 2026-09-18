@@ -1,0 +1,986 @@
+--[[
+    WindUI Lite (可執行單檔版)
+    基於 Footagesus 的 WindUI v1.6.66 精簡改寫
+    Original: https://github.com/Footagesus/WindUI
+    License: MIT
+]]
+
+--=====================================================================
+-- 0. 依賴
+--=====================================================================
+local cloneref = cloneref or clonereference or function(x) return x end
+local Players = cloneref(game:GetService("Players"))
+local RunService = cloneref(game:GetService("RunService"))
+local TweenService = cloneref(game:GetService("TweenService"))
+local UserInputService = cloneref(game:GetService("UserInputService"))
+local HttpService = cloneref(game:GetService("HttpService"))
+local LocalPlayer = Players.LocalPlayer
+
+--=====================================================================
+-- 1. 全域狀態
+--=====================================================================
+local WindUI = {
+    Font = "rbxassetid://12187365364",
+    Theme = nil,
+    Themes = nil,
+    Window = nil,
+    UIScale = 1,
+    Signals = {},
+    CurrentInput = nil,
+    Version = "1.6.66-lite",
+}
+_G.WindUI = WindUI
+
+function WindUI.GenerateGUID() return HttpService:GenerateGUID(false) end
+
+function WindUI.AddSignal(sig, fn)
+    local c = sig:Connect(fn)
+    table.insert(WindUI.Signals, c)
+    return c
+end
+
+function WindUI.SafeCallback(fn, ...)
+    if not fn then return end
+    local ok, err = pcall(fn, ...)
+    if not ok then warn("[WindUI] "..tostring(err)) end
+end
+
+function WindUI.Tween(obj, t, props, style, dir)
+    return TweenService:Create(obj, TweenInfo.new(
+        t, style or Enum.EasingStyle.Quint, dir or Enum.EasingDirection.Out
+    ), props)
+end
+
+function WindUI.GetTextColorForHSB(c, threshold)
+    local h, s, v = Color3.toHSV(c)
+    local brightness = 0.299*c.R + 0.587*c.G + 0.114*c.B
+    if brightness > (threshold or 0.5) then
+        return Color3.fromHSV(h, 0, 0.05)
+    end
+    return Color3.fromHSV(h, 0, 0.98)
+end
+
+--=====================================================================
+-- 2. Shapes (圓角形狀)
+--=====================================================================
+local Shapes = {
+    Circle = { Image="rbxassetid://111665032676235", Rect=Rect.new(512,512,512,512), Radius=512 },
+    CircleOutline = { Image="rbxassetid://108556680453287", Rect=Rect.new(512,512,512,512), Radius=512 },
+    Squircle = { Image="rbxassetid://89641024074289", Rect=Rect.new(460,460,460,460), Radius=310 },
+    SquircleOutline = { Image="rbxassetid://74029063732681", Rect=Rect.new(512,512,512,512), Radius=310 },
+    Square = { Image="rbxassetid://82909646051652", Rect=Rect.new(512,512,512,512), Radius=512 },
+}
+
+local function makeRoundFrame(props, parent, radius, shapeName)
+    radius = radius or 12
+    shapeName = shapeName or "Squircle"
+    local shape = Shapes[shapeName] or Shapes.Squircle
+
+    local inst = Instance.new("ImageLabel")
+    inst.BackgroundTransparency = 1
+    inst.BorderSizePixel = 0
+    inst.Image = shape.Image
+    inst.ScaleType = Enum.ScaleType.Slice
+    inst.SliceCenter = shape.Rect
+    inst.SliceScale = math.max(radius / shape.Radius, 0.0001)
+    inst.Size = props.Size or UDim2.new(1,0,1,0)
+
+    for k, v in next, props or {} do
+        if k ~= "ThemeTag" and k ~= "Size" then
+            inst[k] = v
+        end
+    end
+
+    if props and props.ThemeTag then
+        inst.Name = inst.Name ~= "" and inst.Name or "RoundFrame"
+        WindUI:AddThemeObject(inst, props.ThemeTag)
+    end
+
+    if parent then inst.Parent = parent end
+    return inst
+end
+
+--=====================================================================
+-- 3. Themes
+--=====================================================================
+WindUI.Themes = {
+    Dark = {
+        Name = "Dark",
+        Accent = Color3.fromHex("#18181b"),
+        Dialog = Color3.fromHex("#1a1a1a"),
+        Text = Color3.fromHex("#FFFFFF"),
+        Placeholder = Color3.fromHex("#a1a1a1"),
+        Background = Color3.fromHex("#101010"),
+        Button = Color3.fromHex("#52525b"),
+        Icon = Color3.fromHex("#a1a1aa"),
+        PanelBackground = Color3.fromHex("#FFFFFF"),
+        PanelBackgroundTransparency = 0.95,
+        ElementBackground = Color3.fromHex("#2A2A2C"),
+        TabBackgroundActive = Color3.fromHex("#2A2A2C"),
+        TabBackgroundActiveTransparency = 0,
+        TabText = Color3.fromHex("#FFFFFF"),
+        WindowShadow = Color3.fromHex("#000000"),
+        WindowBackground = Color3.fromHex("#101010"),
+        Outline = Color3.fromHex("#FFFFFF"),
+    },
+}
+
+local ThemeObjects = {}
+
+function WindUI:AddThemeObject(obj, tag)
+    ThemeObjects[obj] = tag
+    self:UpdateThemeForObject(obj)
+end
+
+function WindUI:GetThemeProperty(name)
+    local theme = self.Theme or self.Themes.Dark
+    local v = theme[name]
+    if type(v) == "string" and v:sub(1,1) == "#" then
+        return Color3.fromHex(v)
+    end
+    return v
+end
+
+function WindUI:UpdateThemeForObject(obj)
+    local tag = ThemeObjects[obj]
+    if not tag or not obj.Parent then return end
+    for prop, key in pairs(tag) do
+        local v = self:GetThemeProperty(key)
+        if v ~= nil then
+            pcall(function() obj[prop] = v end)
+        end
+    end
+end
+
+function WindUI:SetTheme(name)
+    if self.Themes[name] then
+        self.Theme = self.Themes[name]
+        for obj in pairs(ThemeObjects) do
+            self:UpdateThemeForObject(obj)
+        end
+    end
+end
+
+--=====================================================================
+-- 4. Creator helpers
+--=====================================================================
+function WindUI:New(class, props, children)
+    local inst = Instance.new(class)
+    if class == "TextLabel" or class == "TextButton" then
+        inst.BackgroundTransparency = 1
+        inst.TextColor3 = Color3.new(1,1,1)
+        inst.RichText = true
+        inst.Font = Enum.Font.Gotham
+    elseif class == "Frame" then
+        inst.BorderSizePixel = 0
+        inst.BackgroundColor3 = Color3.new(1,1,1)
+    elseif class == "ImageLabel" or class == "ImageButton" then
+        inst.BackgroundTransparency = 1
+        inst.BorderSizePixel = 0
+    end
+
+    for k, v in next, props or {} do
+        if k ~= "ThemeTag" then inst[k] = v end
+    end
+    for _, c in next, children or {} do c.Parent = inst end
+
+    if props and props.ThemeTag then
+        self:AddThemeObject(inst, props.ThemeTag)
+    end
+    if props and props.FontFace then
+        inst.FontFace = props.FontFace
+    end
+    return inst
+end
+
+function WindUI:Icon(name)
+    -- 極簡 icon：使用文字符號代替，避免依賴巨大圖示表
+    local map = {
+        x = "✕", minus = "—", maximize = "⛶", search = "🔍",
+        ["chevron-down"] = "⌄", ["arrow-right"] = "→", ["arrow-left"] = "←",
+        check = "✓", play = "▶", pause = "⏸", home = "🏠",
+        settings = "⚙", user = "👤", info = "ℹ", alert = "⚠",
+        trash = "🗑", plus = "+", copy = "📋", lock = "🔒",
+    }
+    return map[name] or "•"
+end
+
+--=====================================================================
+-- 5. Notification
+--=====================================================================
+WindUI.NotificationHolder = nil
+
+function WindUI:InitNotifications(parent)
+    local holder = self:New("Frame", {
+        Name = "NotificationHolder",
+        Size = UDim2.new(0, 300, 1, -100),
+        Position = UDim2.new(1, -20, 0, 20),
+        AnchorPoint = Vector2.new(1, 0),
+        BackgroundTransparency = 1,
+        Parent = parent,
+    }, {
+        self:New("UIListLayout", {
+            Padding = UDim.new(0, 8),
+            VerticalAlignment = Enum.VerticalAlignment.Top,
+            HorizontalAlignment = Enum.HorizontalAlignment.Right,
+        }),
+    })
+    self.NotificationHolder = holder
+end
+
+function WindUI:Notify(props)
+    if not self.NotificationHolder then return end
+
+    local card = makeRoundFrame({
+        Size = UDim2.new(1, 0, 0, 70),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        LayoutOrder = -tick(),
+        ThemeTag = { ImageColor3 = "Button" },
+    }, self.NotificationHolder, 12)
+
+    card.ImageTransparency = 0
+
+    local title = self:New("TextLabel", {
+        Text = props.Title or "Notification",
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(self.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        Size = UDim2.new(1, -30, 0, 20),
+        Position = UDim2.new(0, 12, 0, 10),
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Parent = card,
+    })
+
+    if props.Content then
+        self:New("TextLabel", {
+            Text = props.Content,
+            TextSize = 14,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextWrapped = true,
+            FontFace = Font.new(self.Font, Enum.FontWeight.Medium),
+            TextColor3 = Color3.new(1,1,1),
+            TextTransparency = 0.3,
+            Size = UDim2.new(1, -24, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            Position = UDim2.new(0, 12, 0, 34),
+            Parent = card,
+        })
+    end
+
+    local close = self:New("TextButton", {
+        Text = self:Icon("x"),
+        TextSize = 14,
+        TextColor3 = Color3.new(1,1,1),
+        TextTransparency = 0.3,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 20, 0, 20),
+        Position = UDim2.new(1, -22, 0, 8),
+        FontFace = Font.new(self.Font, Enum.FontWeight.Bold),
+        Parent = card,
+    })
+
+    card.Size = UDim2.new(1, 0, 0, 0)
+    self:Tween(card, 0.25, { Size = UDim2.new(1, 0, 0, title.TextBounds.Y + (props.Content and 60 or 26)) }):Play()
+
+    local closed = false
+    local function close()
+        if closed then return end
+        closed = true
+        self:Tween(card, 0.2, { ImageTransparency = 1 }):Play()
+        for _, child in ipairs(card:GetDescendants()) do
+            if child:IsA("TextLabel") then
+                self:Tween(child, 0.2, { TextTransparency = 1 }):Play()
+            end
+        end
+        task.delay(0.25, function() card:Destroy() end)
+    end
+
+    close.MouseButton1Click:Connect(close)
+    task.delay(props.Duration or 5, close)
+    return { Close = close }
+end
+
+--=====================================================================
+-- 6. Elements
+--=====================================================================
+local Elements = {}
+
+-- Paragraph
+function Elements.Paragraph(parent, cfg)
+    local frame = makeRoundFrame({
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        ThemeTag = { ImageColor3 = "ElementBackground", ImageTransparency = "ElementBackgroundTransparency" },
+        Parent = parent,
+    }, parent, 12)
+    frame.ImageTransparency = cfg.Transparency or 0.9
+
+    local pad = WindUI:New("UIPadding", {
+        PaddingTop = UDim.new(0, 12), PaddingBottom = UDim.new(0, 12),
+        PaddingLeft = UDim.new(0, 14), PaddingRight = UDim.new(0, 14),
+        Parent = frame,
+    })
+
+    local title = WindUI:New("TextLabel", {
+        Text = cfg.Title or "Paragraph",
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextWrapped = true,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        Parent = frame,
+    })
+
+    if cfg.Desc then
+        WindUI:New("TextLabel", {
+            Text = cfg.Desc,
+            TextSize = 14,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            TextWrapped = true,
+            TextTransparency = 0.3,
+            FontFace = Font.new(WindUI.Font, Enum.FontWeight.Medium),
+            TextColor3 = Color3.new(1,1,1),
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 0, 0, title.TextBounds.Y + 4),
+            Size = UDim2.new(1, 0, 0, 0),
+            AutomaticSize = Enum.AutomaticSize.Y,
+            Parent = frame,
+        })
+    end
+
+    return frame
+end
+
+-- Button
+function Elements.Button(parent, cfg)
+    local btn = WindUI:New("TextButton", {
+        Size = UDim2.new(1, 0, 0, 38),
+        BackgroundTransparency = 1,
+        Text = "",
+        Parent = parent,
+    })
+
+    local bg = makeRoundFrame({
+        Size = UDim2.new(1, 0, 1, 0),
+        ThemeTag = { ImageColor3 = "Button" },
+        ImageTransparency = 0,
+    }, btn, 10)
+
+    WindUI:New("TextLabel", {
+        Text = cfg.Title or "Button",
+        TextSize = 16,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0),
+        Parent = btn,
+    })
+
+    WindUI:AddSignal(btn.MouseEnter, function()
+        WindUI:Tween(bg, 0.1, { ImageTransparency = 0.15 }):Play()
+    end)
+    WindUI:AddSignal(btn.MouseLeave, function()
+        WindUI:Tween(bg, 0.1, { ImageTransparency = 0 }):Play()
+    end)
+    WindUI:AddSignal(btn.MouseButton1Click, function()
+        WindUI:SafeCallback(cfg.Callback)
+    end)
+
+    return btn
+end
+
+-- Toggle
+function Elements.Toggle(parent, cfg)
+    local state = { Value = cfg.Value or false }
+    local frame = makeRoundFrame({
+        Size = UDim2.new(1, 0, 0, 42),
+        ThemeTag = { ImageColor3 = "ElementBackground", ImageTransparency = "ElementBackgroundTransparency" },
+        Parent = parent,
+    }, parent, 10)
+    frame.ImageTransparency = 0.9
+
+    WindUI:New("TextLabel", {
+        Text = cfg.Title or "Toggle",
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -70, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        Parent = frame,
+    })
+
+    local track = makeRoundFrame({
+        Size = UDim2.new(0, 40, 0, 20),
+        Position = UDim2.new(1, -52, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5),
+        BackgroundColor3 = Color3.fromHex("#444"),
+    }, frame, 999)
+    track.ImageTransparency = 0
+
+    local knob = WindUI:New("Frame", {
+        Size = UDim2.new(0, 16, 0, 16),
+        Position = UDim2.new(0, 2, 0.5, 0),
+        AnchorPoint = Vector2.new(0, 0.5),
+        BackgroundColor3 = Color3.new(1,1,1),
+        Parent = track,
+    }, {
+        WindUI:New("UICorner", { CornerRadius = UDim.new(1, 0) }),
+    })
+
+    local function set(v, fireCallback)
+        state.Value = v
+        local goal = v and UDim2.new(1, -18, 0.5, 0) or UDim2.new(0, 2, 0.5, 0)
+        WindUI:Tween(knob, 0.2, { Position = goal }):Play()
+        WindUI:Tween(track, 0.2, {
+            BackgroundColor3 = v and Color3.fromHex("#3B82F6") or Color3.fromHex("#444")
+        }):Play()
+        if fireCallback ~= false then
+            WindUI:SafeCallback(cfg.Callback, v)
+        end
+    end
+
+    set(state.Value, false)
+
+    local hit = WindUI:New("TextButton", {
+        Text = "", BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 1, 0), Parent = frame,
+    })
+    WindUI:AddSignal(hit.MouseButton1Click, function()
+        set(not state.Value)
+    end)
+
+    return { Set = function(_, v) set(v, false) end, Value = state.Value }
+end
+
+-- Slider
+function Elements.Slider(parent, cfg)
+    local minV = (cfg.Value and cfg.Value.Min) or 0
+    local maxV = (cfg.Value and cfg.Value.Max) or 100
+    local cur = (cfg.Value and cfg.Value.Default) or minV
+    local step = cfg.Step or 1
+
+    local frame = makeRoundFrame({
+        Size = UDim2.new(1, 0, 0, 42),
+        ThemeTag = { ImageColor3 = "ElementBackground", ImageTransparency = "ElementBackgroundTransparency" },
+        Parent = parent,
+    }, parent, 10)
+    frame.ImageTransparency = 0.9
+
+    WindUI:New("TextLabel", {
+        Text = cfg.Title or "Slider",
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0.5, 0, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        Parent = frame,
+    })
+
+    local valLbl = WindUI:New("TextLabel", {
+        Text = tostring(cur),
+        TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Right,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.Medium),
+        TextColor3 = Color3.new(1,1,1),
+        TextTransparency = 0.3,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 40, 1, 0),
+        Position = UDim2.new(1, -52, 0, 0),
+        Parent = frame,
+    })
+
+    local track = WindUI:New("Frame", {
+        Size = UDim2.new(0.4, -20, 0, 4),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        BackgroundColor3 = Color3.fromHex("#333"),
+        Parent = frame,
+    }, { WindUI:New("UICorner", { CornerRadius = UDim.new(1,0) }) })
+
+    local fill = WindUI:New("Frame", {
+        Size = UDim2.new((cur - minV) / (maxV - minV), 0, 1, 0),
+        BackgroundColor3 = Color3.fromHex("#3B82F6"),
+        Parent = track,
+    }, { WindUI:New("UICorner", { CornerRadius = UDim.new(1,0) }) })
+
+    local thumb = WindUI:New("Frame", {
+        Size = UDim2.new(0, 12, 0, 12),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(fill.Size.X.Scale, 0, 0.5, 0),
+        BackgroundColor3 = Color3.new(1,1,1),
+        ZIndex = 2,
+        Parent = track,
+    }, { WindUI:New("UICorner", { CornerRadius = UDim.new(1,0) }) })
+
+    local function set(v, fire)
+        v = math.clamp(v, minV, maxV)
+        cur = v
+        local ratio = (v - minV) / (maxV - minV)
+        fill.Size = UDim2.new(ratio, 0, 1, 0)
+        thumb.Position = UDim2.new(ratio, 0, 0.5, 0)
+        valLbl.Text = tostring(v)
+        if fire ~= false then WindUI:SafeCallback(cfg.Callback, v) end
+    end
+
+    local dragging = false
+    local hit = WindUI:New("TextButton", {
+        Text = "", BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 20),
+        Position = UDim2.new(0, 0, 0.5, -10),
+        Parent = frame,
+    })
+
+    local function update(input)
+        local rel = (input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X
+        rel = math.clamp(rel, 0, 1)
+        local raw = minV + rel * (maxV - minV)
+        local stepped = math.floor(raw / step + 0.5) * step
+        set(stepped)
+    end
+
+    WindUI:AddSignal(hit.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            update(input)
+        end
+    end)
+    WindUI:AddSignal(UserInputService.InputChanged, function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+            update(input)
+        end
+    end)
+    WindUI:AddSignal(UserInputService.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    return { Set = function(_, v) set(v) end, Value = cur }
+end
+
+-- Input
+function Elements.Input(parent, cfg)
+    local frame = makeRoundFrame({
+        Size = UDim2.new(1, 0, 0, 42),
+        ThemeTag = { ImageColor3 = "ElementBackground", ImageTransparency = "ElementBackgroundTransparency" },
+        Parent = parent,
+    }, parent, 10)
+    frame.ImageTransparency = 0.9
+
+    local box = WindUI:New("TextBox", {
+        Text = cfg.Value or "",
+        PlaceholderText = cfg.Placeholder or "Enter text...",
+        TextSize = 15,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.Medium),
+        TextColor3 = Color3.new(1,1,1),
+        PlaceholderColor3 = Color3.fromHex("#a1a1a1"),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -24, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        ClearTextOnFocus = false,
+        Parent = frame,
+    })
+
+    WindUI:AddSignal(box.FocusLost, function()
+        WindUI:SafeCallback(cfg.Callback, box.Text)
+    end)
+
+    return { Set = function(_, v) box.Text = v end, Value = box.Text }
+end
+
+-- Section (可折疊)
+function Elements.Section(parent, cfg)
+    local self = { Opened = cfg.Opened ~= false, Elements = {}, Expandable = false }
+
+    local container = WindUI:New("Frame", {
+        Size = UDim2.new(1, 0, 0, 40),
+        BackgroundTransparency = 1,
+        Parent = parent,
+    }, {
+        WindUI:New("UIListLayout", {
+            Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+    })
+
+    local header = makeRoundFrame({
+        Size = UDim2.new(1, 0, 0, 40),
+        ThemeTag = { ImageColor3 = "Button" },
+        LayoutOrder = -9999,
+    }, container, 10)
+    header.ImageTransparency = 0.85
+
+    local arrow = WindUI:New("TextLabel", {
+        Text = self.Opened and "⌄" or "›",
+        TextSize = 18,
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 20, 0, 20),
+        Position = UDim2.new(0, 10, 0.5, -10),
+        Parent = header,
+    })
+
+    WindUI:New("TextLabel", {
+        Text = cfg.Title or "Section",
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -40, 1, 0),
+        Position = UDim2.new(0, 36, 0, 0),
+        Parent = header,
+    })
+
+    local content = WindUI:New("Frame", {
+        Size = UDim2.new(1, 0, 0, 0),
+        AutomaticSize = Enum.AutomaticSize.Y,
+        BackgroundTransparency = 1,
+        LayoutOrder = -9998,
+        Parent = container,
+    }, {
+        WindUI:New("UIListLayout", { Padding = UDim.new(0, 6) }),
+    })
+
+    if not self.Opened then content.Visible = false end
+
+    WindUI:AddSignal(header.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            self.Opened = not self.Opened
+            content.Visible = self.Opened
+            arrow.Text = self.Opened and "⌄" or "›"
+        end
+    end)
+
+    return content, self
+end
+
+-- Divider
+function Elements.Divider(parent)
+    return WindUI:New("Frame", {
+        Size = UDim2.new(1, 0, 0, 1),
+        BackgroundColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 0.85,
+        Parent = parent,
+    })
+end
+
+--=====================================================================
+-- 7. Tab
+--=====================================================================
+local function makeTab(window, cfg)
+    local tab = {
+        Title = cfg.Title or "Tab",
+        Elements = {},
+        Selected = false,
+        Container = nil,
+    }
+
+    -- 側邊按鈕
+    local btn = makeRoundFrame({
+        Size = UDim2.new(1, -8, 0, 34),
+        ThemeTag = { ImageColor3 = "Button" },
+    }, window._sidebarContent, 10)
+    btn.ImageTransparency = 1
+
+    local label = WindUI:New("TextLabel", {
+        Text = tab.Title,
+        TextSize = 15,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(WindUI.Font, Enum.FontWeight.Medium),
+        TextColor3 = Color3.new(1,1,1),
+        TextTransparency = 0.35,
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -20, 1, 0),
+        Position = UDim2.new(0, 12, 0, 0),
+        Parent = btn,
+    })
+
+    -- 內容區
+    local container = WindUI:New("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ScrollBarThickness = 0,
+        CanvasSize = UDim2.new(0,0,0,0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Visible = false,
+        Parent = window._content,
+    }, {
+        WindUI:New("UIListLayout", {
+            Padding = UDim.new(0, 6),
+            SortOrder = Enum.SortOrder.LayoutOrder,
+        }),
+        WindUI:New("UIPadding", {
+            PaddingTop = UDim.new(0, 12),
+            PaddingBottom = UDim.new(0, 12),
+            PaddingLeft = UDim.new(0, 12),
+            PaddingRight = UDim.new(0, 12),
+        }),
+    })
+    tab.Container = container
+
+    local function select()
+        for _, t in ipairs(window._tabs) do
+            t.Selected = false
+            t.Container.Visible = false
+            t._btn.ImageTransparency = 1
+            t._label.TextTransparency = 0.35
+        end
+        tab.Selected = true
+        container.Visible = true
+        WindUI:Tween(btn, 0.15, { ImageTransparency = 0 }):Play()
+        WindUI:Tween(label, 0.15, { TextTransparency = 0 }):Play()
+    end
+
+    tab._btn = btn
+    tab._label = label
+    tab.Select = function() select() end
+
+    WindUI:AddSignal(btn.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            select()
+        end
+    end)
+
+    table.insert(window._tabs, tab)
+    if #window._tabs == 1 then select() end
+
+    -- 對外元素方法
+    function tab:Paragraph(c) Elements.Paragraph(container, c) return self end
+    function tab:Button(c) Elements.Button(container, c) return self end
+    function tab:Toggle(c) return Elements.Toggle(container, c) end
+    function tab:Slider(c) return Elements.Slider(container, c) end
+    function tab:Input(c) return Elements.Input(container, c) end
+    function tab:Divider() Elements.Divider(container); return self end
+    function tab:Section(c)
+        local content, sec = Elements.Section(container, c)
+        local proxy = {}
+        function proxy:Paragraph(cc) Elements.Paragraph(content, cc); return proxy end
+        function proxy:Button(cc) Elements.Button(content, cc); return proxy end
+        function proxy:Toggle(cc) return Elements.Toggle(content, cc) end
+        function proxy:Slider(cc) return Elements.Slider(content, cc) end
+        function proxy:Input(cc) return Elements.Input(content, cc) end
+        function proxy:Divider() Elements.Divider(content); return proxy end
+        return proxy
+    end
+
+    return tab
+end
+
+--=====================================================================
+-- 8. Window
+--=====================================================================
+function WindUI:CreateWindow(cfg)
+    cfg = cfg or {}
+
+    local screenGui = self:New("ScreenGui", {
+        Name = "WindUI",
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = (gethui and gethui()) or LocalPlayer:WaitForChild("PlayerGui"),
+    })
+
+    -- 通知層
+    self:InitNotifications(screenGui)
+
+    local main = self:New("Frame", {
+        Name = "Main",
+        Size = cfg.Size or UDim2.new(0, 580, 0, 460),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        BackgroundTransparency = 1,
+        Parent = screenGui,
+    }, {
+        self:New("UIScale", { Scale = self.UIScale }),
+    })
+
+    local bg = makeRoundFrame({
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = Color3.fromHex("#101010"),
+    }, main, 16)
+
+    -- Topbar
+    local topbar = self:New("Frame", {
+        Name = "Topbar",
+        Size = UDim2.new(1, 0, 0, 52),
+        BackgroundTransparency = 1,
+        Parent = main,
+    })
+
+    self:New("TextLabel", {
+        Text = cfg.Title or "WindUI",
+        TextSize = 16,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        FontFace = Font.new(self.Font, Enum.FontWeight.SemiBold),
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(1, -160, 1, 0),
+        Position = UDim2.new(0, 16, 0, 0),
+        Parent = topbar,
+    })
+
+    if cfg.Author then
+        self:New("TextLabel", {
+            Text = cfg.Author,
+            TextSize = 12,
+            TextXAlignment = Enum.TextXAlignment.Left,
+            FontFace = Font.new(self.Font, Enum.FontWeight.Medium),
+            TextColor3 = Color3.new(1,1,1),
+            TextTransparency = 0.5,
+            BackgroundTransparency = 1,
+            Position = UDim2.new(0, 16, 0, 30),
+            Size = UDim2.new(1, -160, 0, 16),
+            Parent = topbar,
+        })
+    end
+
+    -- 關閉按鈕
+    local closeBtn = self:New("TextButton", {
+        Text = self:Icon("x"),
+        TextSize = 16,
+        TextColor3 = Color3.new(1,1,1),
+        BackgroundTransparency = 1,
+        Size = UDim2.new(0, 30, 0, 30),
+        Position = UDim2.new(1, -40, 0.5, -15),
+        Font = Enum.Font.GothamBold,
+        Parent = topbar,
+    })
+    self:AddSignal(closeBtn.MouseButton1Click, function()
+        main.Visible = false
+    end)
+
+    -- Sidebar
+    local sidebar = self:New("Frame", {
+        Name = "Sidebar",
+        Size = UDim2.new(0, 180, 1, -52),
+        Position = UDim2.new(0, 0, 0, 52),
+        BackgroundTransparency = 1,
+        Parent = main,
+    })
+
+    local sidebarContent = self:New("ScrollingFrame", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ScrollBarThickness = 0,
+        CanvasSize = UDim2.new(0,0,0,0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        Parent = sidebar,
+    }, {
+        self:New("UIListLayout", { Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder }),
+        self:New("UIPadding", {
+            PaddingTop = UDim.new(0, 10), PaddingBottom = UDim.new(0, 10),
+            PaddingLeft = UDim.new(0, 8), PaddingRight = UDim.new(0, 8),
+        }),
+    })
+
+    -- Content
+    local content = self:New("Frame", {
+        Name = "Content",
+        Size = UDim2.new(1, -180, 1, -52),
+        Position = UDim2.new(0, 180, 0, 52),
+        BackgroundTransparency = 1,
+        Parent = main,
+    })
+
+    -- 拖曳
+    local dragging, dragStart, startPos
+    self:AddSignal(topbar.InputBegan, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = main.Position
+        end
+    end)
+    self:AddSignal(UserInputService.InputChanged, function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+        or input.UserInputType == Enum.UserInputType.Touch) then
+            local delta = input.Position - dragStart
+            main.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + delta.X,
+                startPos.Y.Scale, startPos.Y.Offset + delta.Y
+            )
+        end
+    end)
+    self:AddSignal(UserInputService.InputEnded, function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = false
+        end
+    end)
+
+    -- Window 物件
+    local window = {
+        _tabs = {},
+        _sidebarContent = sidebarContent,
+        _content = content,
+        Main = main,
+        ScreenGui = screenGui,
+        Closed = false,
+    }
+
+    function window:Tab(tabCfg)
+        return makeTab(self, tabCfg)
+    end
+
+    function window:Notify(props)
+        return WindUI:Notify(props)
+    end
+
+    function window:Close()
+        self.Closed = true
+        main.Visible = false
+    end
+
+    function window:Open()
+        self.Closed = false
+        main.Visible = true
+    end
+
+    function window:Toggle()
+        if self.Closed then self:Open() else self:Close() end
+    end
+
+    function window:Destroy()
+        for _, c in ipairs(WindUI.Signals) do c:Disconnect() end
+        screenGui:Destroy()
+    end
+
+    function window:SelectTab(index)
+        if self._tabs[index] then self._tabs[index]:Select() end
+    end
+
+    self.Window = window
+
+    -- Toggle key
+    if cfg.ToggleKey then
+        self:AddSignal(UserInputService.InputBegan, function(input, processed)
+            if processed then return end
+            if input.KeyCode == cfg.ToggleKey then
+                window:Toggle()
+            end
+        end)
+    end
+
+    return window
+end
+
+--=====================================================================
+-- 9. 初始化主題
+--=====================================================================
+WindUI:SetTheme("Dark")
+
+return WindUI
