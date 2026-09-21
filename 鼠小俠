@@ -1,0 +1,101 @@
+local VIM = game:GetService("VirtualInputManager")
+local UIS = game:GetService("UserInputService")
+local CoreGui = game:GetService("CoreGui")
+local Player = game.Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+-- 狀態變數
+local AutoClicking = false
+local AutoKeying = false
+-- 建立 UI 介面
+local ScreenGui = Instance.new("ScreenGui", CoreGui)
+local MainFrame = Instance.new("Frame", ScreenGui)
+MainFrame.Size = UDim2.new(0, 220, 0, 220)
+MainFrame.Position = UDim2.new(0.8, 0, 0.3, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true 
+-- 標題
+local Title = Instance.new("TextLabel", MainFrame)
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.Text = "🛡️ 鼠小俠 (熱鍵: L)"
+Title.TextColor3 = Color3.new(1, 1, 1)
+Title.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
+-- [功能 1：自動連點左鍵]
+local ClickBtn = Instance.new("TextButton", MainFrame)
+ClickBtn.Size = UDim2.new(0.9, 0, 0, 40)
+ClickBtn.Position = UDim2.new(0.05, 0, 0.2, 0)
+ClickBtn.Text = "🖱️ 開始中心連點 (L)"
+ClickBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+ClickBtn.TextColor3 = Color3.new(1, 1, 1)
+-- [功能 2：自定義按鍵輸入]
+local KeyInput = Instance.new("TextBox", MainFrame)
+KeyInput.Size = UDim2.new(0.4, 0, 0, 30); KeyInput.Position = UDim2.new(0.05, 0, 0.45, 0); KeyInput.Text = "X"; KeyInput.BackgroundColor3 = Color3.fromRGB(60, 60, 60); KeyInput.TextColor3 = Color3.new(1, 1, 1)
+local TimeInput = Instance.new("TextBox", MainFrame)
+TimeInput.Size = UDim2.new(0.4, 0, 0, 30); TimeInput.Position = UDim2.new(0.55, 0, 0.45, 0); TimeInput.Text = "0.5"; TimeInput.BackgroundColor3 = Color3.fromRGB(60, 60, 60); TimeInput.TextColor3 = Color3.new(1, 1, 1)
+local KeyBtn = Instance.new("TextButton", MainFrame)
+KeyBtn.Size = UDim2.new(0.9, 0, 0, 40)
+KeyBtn.Position = UDim2.new(0.05, 0, 0.65, 0)
+KeyBtn.Text = "⌨️ 開始自動按鍵"
+KeyBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+KeyBtn.TextColor3 = Color3.new(1, 1, 1)
+--- 核心邏輯 ---
+-- 切換點擊狀態的函數
+local function toggleClick()
+    AutoClicking = not AutoClicking
+    if AutoClicking then
+        ClickBtn.Text = "🔴 停止中心連點 (L)"
+        ClickBtn.BackgroundColor3 = Color3.fromRGB(180, 0, 0)
+    else
+        ClickBtn.Text = "🖱️ 開始中心連點 (L)"
+        ClickBtn.BackgroundColor3 = Color3.fromRGB(0, 150, 0)
+    end
+end
+-- 綁定滑鼠點擊 UI
+ClickBtn.MouseButton1Click:Connect(toggleClick)
+-- 綁定 L 熱鍵
+UIS.InputBegan:Connect(function(input, gpe)
+    -- gpe 為 true 代表玩家正在輸入文字(聊天或填寫 TextBox)，此時不觸發熱鍵
+    if gpe then return end 
+    
+    if input.KeyCode == Enum.KeyCode.L then
+        toggleClick()
+    end
+end)
+-- 自動點擊循環 (鎖定中心)
+task.spawn(function()
+    while true do
+        if AutoClicking then
+            local centerX = Camera.ViewportSize.X / 2
+            local centerY = Camera.ViewportSize.Y / 2
+            -- 模擬滑鼠在畫面中心點下與放開
+            VIM:SendMouseButtonEvent(centerX, centerY, 0, true, game, 1)
+            VIM:SendMouseButtonEvent(centerX, centerY, 0, false, game, 1)
+        end
+        task.wait(0.1) -- 點擊速度，可依需求調整
+    end
+end)
+-- 自動按鍵邏輯
+KeyBtn.MouseButton1Click:Connect(function()
+    AutoKeying = not AutoKeying
+    KeyBtn.Text = AutoKeying and "🔴 停止按鍵" or "⌨️ 開始自動按鍵"
+    KeyBtn.BackgroundColor3 = AutoKeying and Color3.fromRGB(180, 0, 0) or Color3.fromRGB(0, 150, 0)
+end)
+task.spawn(function()
+    while true do
+        if AutoKeying then
+            local target = KeyInput.Text:upper()
+            local waitTime = tonumber(TimeInput.Text) or 0.5
+            local success, keyCode = pcall(function() return Enum.KeyCode[target] end)
+            if success and keyCode then
+                VIM:SendKeyEvent(true, keyCode, false, game)
+                task.wait(0.05)
+                VIM:SendKeyEvent(false, keyCode, false, game)
+            end
+            task.wait(waitTime)
+        else
+            task.wait(0.5)
+        end
+    end
+end)
+print("畫面中心助手已載入！熱鍵 [L] 已啟用。")
