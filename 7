@@ -1,0 +1,1452 @@
+----------------------------------------
+--等待加載
+----------------------------------------
+repeat
+    task.wait()
+until game:IsLoaded() and game:GetService("Players").LocalPlayer
+
+----------------------------------------
+--服務
+----------------------------------------
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local TeleportService = game:GetService("TeleportService")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+local PlaceId = game.PlaceId
+local JobId = game.JobId
+
+----------------------------------------
+-- 防重複啟用
+----------------------------------------
+if getgenv().AutoFindFruitLoaded then
+    local StarterGui = game:GetService("StarterGui")
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Auto Find Fruit",
+            Text = "腳本已在運行中，請勿重複執行！",
+            Duration = 3
+        })
+    end)
+    return
+end
+
+getgenv().AutoFindFruitLoaded = true
+
+--------------------------
+-- WindUI 載入
+--------------------------
+local WindUI = loadstring(request({
+    Url = "https://raw.githubusercontent.com/Footagesus/WindUI/main/dist/main.lua"
+}).Body)()
+
+local Window = WindUI:CreateWindow({
+    Title         = "Auto Find Fruit",
+    Icon          = "apple",
+    Author        = "by Xu",
+    Size          = UDim2.fromOffset(600, 400),
+    Transparent   = true,
+    Theme         = "Dark",
+    User = {
+        Enabled   = true,
+        Anonymous = false,
+        Callback  = function()
+            local LocalPlayer = game.Players.LocalPlayer
+            WindUI:Notify({ 
+                Title = LocalPlayer.Name, 
+                Content = "ID: " .. LocalPlayer.UserId, 
+                Duration = 3 
+            })
+        end
+    },
+    Acrylic       = false,
+    HideSearchBar = false,
+    SideBarWidth  = 200,
+    OpenButton = {
+        Title           = "Auto Find Fruit",
+        CornerRadius    = UDim.new(1, 0),
+        StrokeThickness = 3,
+        Enabled         = true,
+        OnlyMobile      = false,
+        Draggable       = true,
+        OnlyIcon        = false,
+        Color = ColorSequence.new(Color3.fromHex("#FF512F"), Color3.fromHex("#DD2476"))
+    }
+})
+
+--UI被關閉可重複執行
+Window:OnDestroy(function()
+    getgenv().AutoFindFruitLoaded = nil
+end)
+
+----------------------------------------
+--變數
+----------------------------------------
+--select Team
+_G.SelectTeam = "Marines"
+
+--ESP Fruit
+_G.FruitESP = true
+
+--Auto store
+_G.AutoStoreFruit = true
+
+-- 自動抽果
+_G.AutoRollFruit = false
+
+--Auto Tween Fruit
+_G.Tweenfruit = false
+_G.ServerHopping = false
+_G.HopDelayTime = 3
+_G.TELEPORT_COOLDOWN = 1
+_G.FruitFlySpeed = 170
+
+_G.LastTeleportTime = 0
+_G.IsMovingToFruit = false
+_G.LastFruitTime = tick()
+_G.ForceHopTriggered = false
+_G.HopTargetJobId = nil
+_G.HopConfirmConn = nil
+_G.ServerHopConn = nil
+
+_G.Fruit_LinearVelocity = nil
+_G.Fruit_AntiGravity = nil
+_G.Fruit_Attachment = nil
+_G.Fruit_TeleportPauseUntil = 0
+_G.Fruit_BlockedEntrances = {}
+_G.Fruit_LastTeleportTicks = {}
+_G.Fruit_TeleportFails = {}
+
+local ServerBrowserRemote = ReplicatedStorage:FindFirstChild("__ServerBrowser")
+local VisitedServers = { [JobId] = true } -- 記錄已訪問過的伺服器避免重複進入
+
+local Fruit_OrbitOffset = nil
+local Fruit_NextOrbitTime = 0
+
+--自動執行
+local queue_on_teleport = queue_on_teleport or (syn and syn.queue_on_teleport)
+
+if isfile and isfile("Hub.file") then
+    local success, content = pcall(function() return readfile("Hub.file") end)
+    _G.AutoExecute = (success and content == "true")
+else
+    _G.AutoExecute = false
+end
+
+local ScriptLoadstring = [[if isfile("Hub.file") then
+    if readfile("Hub.file") == "true" then
+        loadstring(game:HttpGet("https://rjr-loader.top/script/autofindfruit"))()
+    end
+end]]
+
+--快捷鍵
+_G.CurrentKey = "G"
+_G.KeyDisabled = false
+
+----------------------------------------
+-- 管理員偵測 / 自動跳服
+----------------------------------------
+_G.AdminAutoHop = true          -- 是否啟用「遇到管理員自動跳服」
+_G.AdminHopTriggered = false    -- 當前伺服器是否已觸發過跳服
+_G.AdminNotifySelf = true       -- 是否通知自己
+_G.AdminRejoinWait = 5          -- 偵測到管理員後 等待幾秒再跳（避免瞬跳被紀錄）
+
+-- 📌 管理員名單（字串 = 帳號名稱或顯示名稱；數字 = UserId）
+_G.AdminList = {
+    "NoctisAUS", "giozvq", "NovaExility", "MollaAmar", "ZeroZero_Two", "Abso_Delete", "SirReis", "kyt0kyt0",
+    "Mertlcle", "Daigrock", "Axiore", "BluxxyGaming", "dethsmurf", "CJ_Oyer", "mrheffner_gg", "vidsmurf",
+    "0BCLIFETIME", "orkoal", "Tacomura", "rip_indra", "Experimic", "arowe", "Uzi_London", "Guashiem",
+    "torrtoise", "ShafiDev", "SylentAsura", "ElG8T", "my6thlife", "AznWay", "uranium_devil", "Nat_7517",
+    "Krossful", "FRANKENSTEIN_L", "FindMotion", "rip_bac0nha", "arlthmetic", "rip_fud", "wenlocktoad",
+    "RealmKisame", "mygame43", "OGTeranas", "testprem0", "mkivtt", "xonae", "iSekai_iSekai", "Uzoth",
+    "Zioles", "numberskull999", "imLockGod", "KatakuriKloudz", "Kaidozyuh", "Rajo_END", "KoopekulYT",
+    "MagicbusYT", "Senmarine", "jet5ss", "CRBoneMillion", "starcode_kitt", "oofficialnoobie", "JCDoesGaming_YT",
+    "TheRealFoltyn", "TheGreatAced", "StarCode_fer", "Jujujutv1", "MouseTheBoi", "slat_real2", "EnyuZee",
+    "NoobWithKitsunee", "MeteoricRBLX", "kyriemiles8", "Sai_JinWoo", "BloxyDRoblox", "geladobiel",
+    "DefinitelyNotBaxtrix", "WoozerBloxYT", "divingintea", "Heorua", "HyperJay06_Official", "Smythsterr",
+    "TyePHX", "Lunoven", "sappVFX", "RealYurl", "Generic_ult", "P4CKSTABBER", "MoraIins", "FallenER0S",
+    "OutOfDinos", "nopatrol", "TobersDaArtisto", "thienbaokhang1", "Kuroxity", "fl8mey", "Bredddo",
+    "Jurillianio", "EstheKing", "baswbaswbasw", "PuddingBumby", "Disard0", "Bread_Doppio", "MuG3ED",
+    "tushai", "Korwiaa", "jers_e", "r_Forbidden", "UnrioChief1", "deadinjstar87",
+    "LegendOfKio", "SirZareli", "Plokster", "Marubravery", "Artszy", "TrucBiduleur100", "AYoungPhienix",
+    "FriedLemonsLoL", "SandiestSandy", "iPrefectSoul", "InfinityExtended", "Adcium", "DaylightSparkIe",
+    "Poifilion", "xZenbrook", "TrayDonce", "khongco789", "dutbooot", "ExtremeBlastSS", "alexoi20",
+    "wMadara_X", "Glitch1ng12", "Rusta_92", "tolovemnice", "IrohaIgarashiBaller", "thesilliestminty",
+    "spiritualsound", "PringleCanKid", "truonked", "corina1234x", "icelandic123", "corazonqr",
+    "rip_russiachat", "vanxing", "WELOVETOKYO", "truownk", "iIlillnickjenkinsill", "DragonDojoOwner",
+    "fr33dim", "ProtoValence", "cooljustint1229", "SkhypeXD", "c0lbl0cks", "CorvusCoraxx", "APandaPoet",
+    "catchymelodies", "lowendisekaialt", "ignotuscaligo", "MangoBytz", "vqanxx", "TretaTbh", "0Krvs",
+    "rigtoni09", "DevForumOps", "BisoBlitz", "eternallav", "DevNexusCore", "b0bbber", "StalwartWarden",
+    "devils21091", "Blotnik", "kablowert", "1OmniJelly1", "RayBloxSunshine", "newtonmetre", "MrChickenRocket",
+    "golden_shellfish", "Doonkahn", "TB_Glitch", "NoDankMemesAllowed", "captainbramble", "CosmoSloth",
+    "Felku", "undercover_admin23", "Arkesium", "RosesAreBlueish", "Suizei",
+    "Quasiduck", "Azarth", "NOT_CRYTICAL", "BachaBlox", "drip_mama", "wenloco", "Phoeating", "vgmsgame",
+    "brqod", "sisterton", "0MARIKENZ0", "norperz", "EIRodoIfo", "sarcxsm", "VehemenciaI", "owidhdk29", "MrPhyllister"
+}
+
+-- 建立雜湊表加快查詢速度
+local AdminNameSet = {}
+local AdminIdSet = {}
+for _, entry in ipairs(_G.AdminList) do
+    if type(entry) == "number" then
+        AdminIdSet[entry] = true
+    elseif type(entry) == "string" then
+        AdminNameSet[entry] = true
+    end
+end
+
+----------------------------------------
+-- 配置自動保存
+----------------------------------------
+local ConfigFolder = "AutoFindFruit_Config"
+local ConfigFile = ConfigFolder .. "/settings_" .. tostring(LocalPlayer.UserId) .. ".json"
+local ConfigReady = false
+local ConfigSaving = false
+local ConfigDirty = false
+
+local ConfigKeys = {
+    "SelectTeam",
+    "FruitESP",
+    "AutoStoreFruit",
+    "AutoRollFruit",
+    "Tweenfruit",
+    "HopDelayTime",
+    "AutoExecute",
+    "CurrentKey",
+    "KeyDisabled",
+    "AdminAutoHop",
+    "AdminNotifySelf",
+    "AdminRejoinWait"
+}
+
+local function CopyConfigValue(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, item in pairs(value) do
+        copy[key] = CopyConfigValue(item)
+    end
+    return copy
+end
+
+local function CollectConfig()
+    local data = {}
+    for _, key in ipairs(ConfigKeys) do
+        if _G[key] ~= nil then
+            data[key] = CopyConfigValue(_G[key])
+        end
+    end
+    return data
+end
+
+local function ApplyConfig(data)
+    if type(data) ~= "table" then return end
+    for _, key in ipairs(ConfigKeys) do
+        if data[key] ~= nil then
+            _G[key] = CopyConfigValue(data[key])
+        end
+    end
+end
+
+local function SaveConfig(force)
+    if ConfigSaving or (not force and not ConfigDirty) or typeof(writefile) ~= "function" then
+        return false
+    end
+    ConfigSaving = true
+    local ok = pcall(function()
+        if typeof(isfolder) == "function" and typeof(makefolder) == "function" and not isfolder(ConfigFolder) then
+            makefolder(ConfigFolder)
+        end
+        writefile(ConfigFile, HttpService:JSONEncode(CollectConfig()))
+    end)
+    ConfigSaving = false
+    if ok then ConfigDirty = false end
+    return ok
+end
+
+local function LoadConfig()
+    if typeof(readfile) ~= "function" or typeof(isfile) ~= "function" or not isfile(ConfigFile) then
+        return false
+    end
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(readfile(ConfigFile))
+    end)
+    if ok and type(data) == "table" then
+        ApplyConfig(data)
+        return true
+    end
+    return false
+end
+
+local InitialConfig = CollectConfig()
+LoadConfig()
+ConfigReady = true
+
+task.spawn(function()
+    local lastConfig = nil
+    while task.wait(1) do
+        if ConfigReady then
+            local ok, currentConfig = pcall(function()
+                return HttpService:JSONEncode(CollectConfig())
+            end)
+            if ok and currentConfig ~= lastConfig then
+                lastConfig = currentConfig
+                ConfigDirty = true
+            end
+            if ConfigDirty then SaveConfig(true) end
+        end
+    end
+end)
+
+--------------------------
+-- 功能核心邏輯
+--------------------------
+--select Team
+local function SelectTeam()
+    local lp = game:GetService("Players").LocalPlayer
+    if not lp.Team or lp.Team.Name ~= _G.SelectTeam then
+        local args = {
+            "SetTeam2",
+            _G.SelectTeam
+        }
+        game:GetService("ReplicatedStorage"):WaitForChild("Remotes"):WaitForChild("CommF_"):InvokeServer(unpack(args))
+    end
+end
+
+SelectTeam()
+
+--ESP Fruit
+local function round(num)
+    return math.floor(num + 0.5)
+end
+
+local function clearEspForInstance(v)
+    pcall(function()
+        if v:FindFirstChild("Handle") and v.Handle:FindFirstChild("NameEsp") then
+            v.Handle["NameEsp"]:Destroy()
+        end
+    end)
+end
+
+local function clearAllEsp()
+    for _, v in pairs(Workspace:GetChildren()) do
+        clearEspForInstance(v)
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    if not _G.FruitESP then return end
+    
+    local character = LocalPlayer.Character
+    if not character or not character:FindFirstChild("Head") then return end
+    local headPos = character.Head.Position
+
+    for _, v in pairs(Workspace:GetChildren()) do
+        pcall(function()
+            if string.find(v.Name, "Fruit") and v:FindFirstChild("Handle") then
+                local handle = v.Handle
+                local espName = "NameEsp"
+                local dist = round((headPos - handle.Position).Magnitude / 3)
+                local displayText = v.Name .. "\n[" .. dist .. "m]"
+
+                local bill = handle:FindFirstChild(espName)
+                if not bill then
+                    bill = Instance.new("BillboardGui", handle)
+                    bill.Name = espName
+                    bill.ExtentsOffset = Vector3.new(0, 2, 0)
+                    bill.Size = UDim2.new(0, 200, 0, 50)
+                    bill.Adornee = handle
+                    bill.AlwaysOnTop = true
+
+                    local name = Instance.new("TextLabel", bill)
+                    name.Font = Enum.Font.GothamBold
+                    name.TextSize = 14
+                    name.TextWrapped = true
+                    name.Size = UDim2.new(1, 0, 1, 0)
+                    name.TextYAlignment = Enum.TextYAlignment.Center
+                    name.BackgroundTransparency = 1
+                    name.TextStrokeTransparency = 0.2
+                    name.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+                    name.TextColor3 = Color3.fromRGB(255, 230, 100)
+                    name.Text = displayText
+                else
+                    bill.TextLabel.Text = displayText
+                end
+            end
+        end)
+    end
+end)
+
+Workspace.ChildRemoved:Connect(function(child)
+    clearEspForInstance(child)
+end)
+
+--store fruit
+task.spawn(function()
+    while true do
+        if _G.AutoStoreFruit then
+            pcall(function()
+                local character = LocalPlayer.Character
+                local backpack = LocalPlayer:FindFirstChild("Backpack")
+                
+                -- 檢查背包中的水果
+                if backpack then
+                    for _, v in pairs(backpack:GetChildren()) do
+                        if v:IsA("Tool") and string.find(v.Name, "Fruit") then
+                            local originalName = v:GetAttribute("OriginalName") or v.Name
+                            game:GetService("ReplicatedStorage").Remotes.CommF_:InvokeServer("StoreFruit", originalName, v)
+                        end
+                    end
+                end
+                
+                -- 檢查角色手上（裝備中）的水果
+                if character then
+                    for _, v in pairs(character:GetChildren()) do
+                        if v:IsA("Tool") and string.find(v.Name, "Fruit") then
+                            local originalName = v:GetAttribute("OriginalName") or v.Name
+                            game:GetService("ReplicatedStorage").Remotes.CommF_:InvokeServer("StoreFruit", originalName, v)
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(0.5)
+    end
+end)
+
+-- 自動抽果
+task.spawn(function()
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+        LocalPlayer.CharacterAdded:Wait()
+        task.wait(3) 
+    else
+        task.wait(3)
+    end
+
+    while true do
+        if _G.AutoRollFruit then
+            local response
+            pcall(function()
+                local args = {
+                    {
+                        Context = "Purchase",
+                        BoxName = "ZiolesGacha"
+                    }
+                }
+                response = game:GetService("ReplicatedStorage")
+                    :WaitForChild("Modules")
+                    :WaitForChild("Net")
+                    :WaitForChild("RF/GachaNetworkRF")
+                    :InvokeServer(unpack(args))
+            end)
+            
+            if response then
+                WindUI:Notify({ 
+                    Title = "抽果結果", 
+                    Content = tostring(response), 
+                    Duration = 5 
+                })
+            end
+            task.wait(600)
+        else
+            task.wait(1)
+        end
+    end
+end)
+
+--Auto Tween Fruit
+local TRANSIT_WAIT_TIME = 2
+local TRANSIT_ARRIVE_DIST = 0
+
+local TransitPoints = {
+    -- 一海
+    World1 = {
+        { point = Vector3.new(61177, -5, 1954),    dest = Vector3.new(3865, 8, -1926) },
+        { point = Vector3.new(4056, -4, -1814),    dest = Vector3.new(61164, 5, 1819) },
+        { point = Vector3.new(-4197, 1092, -362),  dest = Vector3.new(-6024, 5469, 2203) },
+        { point = Vector3.new(-6022, 5469, 2215),  dest = Vector3.new(-4167, 1092, -347) },
+    },
+    -- 二海
+    World2 = {
+        { point = Vector3.new(2283, 16, 910),      dest = Vector3.new(-287, 306, 599) },
+        { point = Vector3.new(-288, 306, 593),     dest = Vector3.new(2285, 15, 904) },
+        { point = Vector3.new(922, 125, 32843),    dest = Vector3.new(-6509, 83, -133) },
+        { point = Vector3.new(-6501, 83, -125),    dest = Vector3.new(923, 125, 32853) },
+    },
+    -- 三海
+    World3 = {
+        { point = Vector3.new(-5060, 317, -3193),  dest = Vector3.new(-12464, 376, -7566) },
+        { point = Vector3.new(-12464, 376, -7566), dest = Vector3.new(-5060, 317, -3193) },
+        { point = Vector3.new(-5096, 317, -3178),  dest = Vector3.new(-16813, 58, 305) },
+        { point = Vector3.new(-5027, 317, -3207),  dest = Vector3.new(5651, 1015, -350) },
+    },
+}
+
+local function GetWorldTransitPoints()
+    local pid = game.PlaceId
+    if pid == 2753915549 or pid == 85211729168715 then
+        return TransitPoints.World1
+    elseif pid == 4442272183 or pid == 79091703265657 then
+        return TransitPoints.World2
+    elseif pid == 7449423635 or pid == 100117331123089 then
+        return TransitPoints.World3
+    end
+    return {}
+end
+
+local function PlanTransitRoute(fromPos, targetPos)
+    local portals = GetWorldTransitPoints()
+    if #portals == 0 then return {} end
+
+    local bestCost = (targetPos - fromPos).Magnitude   -- 直飛作為基準
+    local bestIndices = {}
+
+    for i, p in ipairs(portals) do
+        local cost = (p.point - fromPos).Magnitude + (p.dest - targetPos).Magnitude
+        if cost < bestCost then
+            bestCost = cost
+            bestIndices = { i }
+        end
+    end
+
+    for i, p in ipairs(portals) do
+        for j, q in ipairs(portals) do
+            if i ~= j then
+                local cost = (p.point - fromPos).Magnitude
+                           + (p.dest - q.point).Magnitude
+                           + (q.dest - targetPos).Magnitude
+                if cost < bestCost then
+                    bestCost = cost
+                    bestIndices = { i, j }
+                end
+            end
+        end
+    end
+
+    local waypoints = {}
+    for _, idx in ipairs(bestIndices) do
+        table.insert(waypoints, portals[idx].point)
+    end
+    return waypoints
+end
+
+-- 中轉狀態全域變數
+_G.FTP2_Transit = nil
+_G.FTP2_TransitTarget = nil
+
+local function ClearFruitFlightComponents()
+    if _G.Fruit_LinearVelocity then _G.Fruit_LinearVelocity:Destroy(); _G.Fruit_LinearVelocity = nil end
+    if _G.Fruit_AntiGravity then _G.Fruit_AntiGravity:Destroy(); _G.Fruit_AntiGravity = nil end
+    if _G.Fruit_Attachment then _G.Fruit_Attachment:Destroy(); _G.Fruit_Attachment = nil end
+end
+
+local function SetupFruitFlightComponents(hrp)
+    ClearFruitFlightComponents()
+
+    local att = Instance.new("Attachment")
+    att.Name = "XuHub_FruitFlightAtt"
+    att.Parent = hrp
+    _G.Fruit_Attachment = att
+
+    local lv = Instance.new("LinearVelocity")
+    lv.Name = "XuHub_FruitFlightVel"
+    lv.MaxForce = math.huge
+    lv.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+    lv.VectorVelocity = Vector3.new(0, 0, 0)
+    lv.Attachment0 = att
+    lv.Parent = hrp
+    _G.Fruit_LinearVelocity = lv
+
+    local totalMass = 0
+    local char = hrp.Parent
+    if char then
+        for _, part in ipairs(char:GetDescendants()) do
+            if part:IsA("BasePart") and not part.Massless then
+                totalMass = totalMass + part:GetMass()
+            end
+        end
+    end
+
+    local vf = Instance.new("VectorForce")
+    vf.Name = "XuHub_FruitAntiGrav"
+    vf.ApplyAtCenterOfMass = true
+    vf.Attachment0 = att
+    vf.Force = Vector3.new(0, totalMass * workspace.Gravity, 0)
+    vf.Parent = hrp
+    _G.Fruit_AntiGravity = vf
+end
+
+local function SetNoCollide(char)
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+end
+
+local function SetCollide(char)
+    if not char then return end
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") then
+            local n = part.Name
+            if n == "HumanoidRootPart" or n == "UpperTorso" or n == "LowerTorso" or n == "Head" then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+local function doJump()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then hum.Jump = true end
+end
+
+-- 防坐下
+local function ForceStandUp()
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hum or hum.Health <= 0 then return end
+
+    if hum.Sit then
+        hum.Sit = false
+        pcall(function() hum.Jump = true end)
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+        pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
+    end
+
+    if hrp then
+        for _, child in ipairs(hrp:GetChildren()) do
+            if child:IsA("Weld") then
+                pcall(function() child:Destroy() end)
+            elseif child:IsA("Motor6D") then
+                local n = string.lower(child.Name)
+                if n:find("seat") or n:find("sit") or n:find("vehicle") then
+                    pcall(function() child:Destroy() end)
+                end
+            end
+        end
+    end
+end
+
+local Fruit_OrbitOffset = nil
+local Fruit_NextOrbitTime = 0
+
+local function FlyToFruitLogic(targetPos)
+    local char = LocalPlayer.Character
+    local myHRP = char and char:FindFirstChild("HumanoidRootPart")
+    if not myHRP then return end
+
+    if not _G.FTP2_Transit or not _G.FTP2_TransitTarget or (_G.FTP2_TransitTarget - targetPos).Magnitude > 20 then
+        _G.FTP2_TransitTarget = targetPos
+        local waypoints = PlanTransitRoute(myHRP.Position, targetPos)
+        _G.FTP2_Transit = {
+            waypoints = waypoints,
+            index = 1,
+            waiting = false,
+            waitUntil = 0
+        }
+    end
+
+    local flyTarget = targetPos
+
+    if _G.FTP2_Transit and _G.FTP2_Transit.index <= #_G.FTP2_Transit.waypoints then
+        local currentWP = _G.FTP2_Transit.waypoints[_G.FTP2_Transit.index]
+
+        local portals = GetWorldTransitPoints()
+        local currentPortal = nil
+        for _, p in ipairs(portals) do
+            if p.point == currentWP then
+                currentPortal = p
+                break
+            end
+        end
+
+        local hasTeleported = false
+        if currentPortal then
+            local distToDest = (myHRP.Position - currentPortal.dest).Magnitude
+            local distToTargetFromHere = (myHRP.Position - targetPos).Magnitude
+            local distToTargetFromWP = (currentWP - targetPos).Magnitude
+
+            if distToDest <= 200 or (distToTargetFromWP - distToTargetFromHere) > 500 then
+                hasTeleported = true
+            end
+        end
+
+        if hasTeleported then
+            _G.FTP2_Transit.waiting = false
+            _G.FTP2_Transit.index = _G.FTP2_Transit.index + 1
+            if _G.FTP2_Transit.index <= #_G.FTP2_Transit.waypoints then
+                flyTarget = _G.FTP2_Transit.waypoints[_G.FTP2_Transit.index]
+            else
+                flyTarget = targetPos
+            end
+        elseif _G.FTP2_Transit.waiting then
+            if os.clock() >= _G.FTP2_Transit.waitUntil then
+                _G.FTP2_Transit.waiting = false
+                _G.FTP2_Transit.index = _G.FTP2_Transit.index + 1
+            else
+                if _G.Fruit_LinearVelocity then
+                    _G.Fruit_LinearVelocity.VectorVelocity = Vector3.new(0, 0, 0)
+                end
+                myHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                return
+            end
+        else
+            local distToWP = (currentWP - myHRP.Position).Magnitude
+            if distToWP <= TRANSIT_ARRIVE_DIST then
+                _G.FTP2_Transit.waiting = true
+                _G.FTP2_Transit.waitUntil = os.clock() + TRANSIT_WAIT_TIME
+                if _G.Fruit_LinearVelocity then
+                    _G.Fruit_LinearVelocity.VectorVelocity = Vector3.new(0, 0, 0)
+                end
+                myHRP.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+                return
+            else
+                flyTarget = currentWP
+            end
+        end
+    end
+
+    local moveTarget = flyTarget
+    if flyTarget == targetPos then
+        local now = os.clock()
+        if not Fruit_OrbitOffset or now >= Fruit_NextOrbitTime then
+            local maxRadius = 20
+            local dist = math.random(1, maxRadius)
+            local d = Vector3.new(math.random() * 2 - 1, math.random() * 2 - 1, math.random() * 2 - 1)
+            if d.Magnitude > 0 then d = d.Unit end
+            Fruit_OrbitOffset = d * dist
+            Fruit_NextOrbitTime = now + 0.05
+        end
+        moveTarget = targetPos + Fruit_OrbitOffset
+    end
+
+    -- 4. 執行物理飛行
+    local needSetup = not _G.Fruit_LinearVelocity or _G.Fruit_LinearVelocity.Parent ~= myHRP
+    if needSetup then SetupFruitFlightComponents(myHRP) end
+
+    local dir = moveTarget - myHRP.Position
+    if dir.Magnitude > 0.1 then
+        _G.Fruit_LinearVelocity.VectorVelocity = dir.Unit * (_G.FruitFlySpeed or 350)
+    else
+        _G.Fruit_LinearVelocity.VectorVelocity = Vector3.new(0, 0, 0)
+    end
+
+    local lookAt = Vector3.new(moveTarget.X, myHRP.Position.Y, moveTarget.Z)
+    if (lookAt - myHRP.Position).Magnitude > 0.1 then
+        myHRP.CFrame = CFrame.new(myHRP.Position, lookAt)
+    end
+end
+
+local function StopFruitFlight()
+    if _G.Fruit_LinearVelocity then
+        _G.Fruit_LinearVelocity.VectorVelocity = Vector3.new(0, 0, 0)
+    end
+    ClearFruitFlightComponents()
+    Fruit_OrbitOffset = nil
+    Fruit_NextOrbitTime = 0
+    _G.FTP2_Transit = nil
+    _G.FTP2_TransitTarget = nil
+
+    local char = LocalPlayer.Character
+    if char then
+        SetCollide(char)
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hum then hum:ChangeState(Enum.HumanoidStateType.Running) end
+        if hrp then
+            hrp.AssemblyLinearVelocity = Vector3.zero
+            hrp.AssemblyAngularVelocity = Vector3.zero
+        end
+    end
+end
+
+local function GetActiveFruitCount()
+    local count = 0
+    for _, v in ipairs(workspace:GetChildren()) do
+        if string.find(v.Name, "Fruit") and v:FindFirstChild("Handle") then
+            count = count + 1
+        end
+    end
+    return count
+end
+
+local function WaitForAllFruitsPicked(timeout)
+    local startTime = tick()
+    while GetActiveFruitCount() > 0 do
+        if not _G.Tweenfruit then return false end
+        if tick() - startTime >= timeout then return false end
+        task.wait(1)
+    end
+    return true
+end
+
+local ServerCore = {}
+
+function ServerCore:TeleportToServer(jobId)
+    if not jobId or jobId == "" then
+        _G.ServerHopping = false
+        return
+    end
+
+    local now = tick()
+    if (now - _G.LastTeleportTime) < _G.TELEPORT_COOLDOWN then
+        task.wait(_G.TELEPORT_COOLDOWN - (now - _G.LastTeleportTime))
+    end
+    _G.LastTeleportTime = tick()
+    _G.HopTargetJobId = jobId
+    VisitedServers[jobId] = true
+
+    task.spawn(function()
+        if ServerBrowserRemote then
+            local success = pcall(function()
+                ServerBrowserRemote:InvokeServer("teleport", jobId)
+            end)
+            if success then return end
+        end
+
+        local teleportOptions = Instance.new("TeleportOptions")
+        teleportOptions.ServerInstanceId = jobId
+
+        local ok = pcall(function()
+            TeleportService:TeleportAsync(PlaceId, { LocalPlayer }, teleportOptions)
+        end)
+        if not ok then
+            ok = pcall(function()
+                TeleportService:TeleportToPlaceInstance(PlaceId, jobId, LocalPlayer)
+            end)
+        end
+
+        if not ok then
+            task.wait(3)
+            _G.ServerHopping = false
+            _G.HopTargetJobId = nil
+        end
+    end)
+end
+
+function ServerCore:FindAndHop(mode)
+    _G.ServerHopping = true
+
+    local startJobId = JobId
+    local HOP_TIMEOUT = 3
+    local HOP_FAIL_WAIT = 1
+
+    local function GetServers(cursor)
+        local url = "https://games.roblox.com/v1/games/" .. PlaceId .. "/servers/Public?sortOrder=Desc&excludeFullGames=true&limit=100"
+        if cursor then
+            url = url .. "&cursor=" .. cursor
+        end
+
+        local success, result = pcall(function()
+            return HttpService:JSONDecode(game:HttpGet(url))
+        end)
+
+        if success and result and result.data then
+            return result
+        end
+        return nil
+    end
+
+    local function FindInPage(data, strict)
+        if not data then return nil end
+        for _, server in ipairs(data) do
+            if type(server) == "table" and server.id and server.playing and server.maxPlayers then
+                local id = tostring(server.id)
+                local playing = tonumber(server.playing) or 0
+                local maxPlayers = tonumber(server.maxPlayers) or 12
+                if id ~= tostring(JobId) and not VisitedServers[id] and playing < maxPlayers then
+                    if strict then
+                        if playing >= 2 and playing <= 10 then
+                            return id
+                        end
+                    else
+                        if playing >= 1 then
+                            return id
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    _G.ServerHopConn = task.spawn(function()
+        while _G.ServerHopping do
+            if game.JobId ~= startJobId then
+                _G.ServerHopping = false
+                break
+            end
+
+            local success, err = pcall(function()
+                local serverData = GetServers()
+                local targetServerId = nil
+
+                if serverData then
+                    targetServerId = FindInPage(serverData.data, true)
+
+                    if not targetServerId and serverData.nextPageCursor then
+                        local nextPageData = GetServers(serverData.nextPageCursor)
+                        if nextPageData then
+                            targetServerId = FindInPage(nextPageData.data, true)
+                        end
+                    end
+
+                    if not targetServerId then
+                        targetServerId = FindInPage(serverData.data, false)
+                    end
+                end
+
+                if targetServerId then
+                    VisitedServers[targetServerId] = true
+
+                    pcall(function()
+                        if ServerBrowserRemote then
+                            ServerBrowserRemote:InvokeServer("teleport", targetServerId)
+                        else
+                            TeleportService:TeleportToPlaceInstance(PlaceId, targetServerId, LocalPlayer)
+                        end
+                    end)
+
+                    local hopDeadline = os.clock() + HOP_TIMEOUT
+                    while _G.ServerHopping and game.JobId == startJobId and os.clock() < hopDeadline do
+                        task.wait(0.1)
+                    end
+
+                    if game.JobId ~= startJobId then
+                        _G.ServerHopping = false
+                        return
+                    end
+                else
+                    VisitedServers = { [JobId] = true }
+                end
+            end)
+
+            if not success then
+                warn("跳服搜尋出錯: " .. tostring(err))
+            end
+
+            if not _G.ServerHopping then
+                break
+            end
+
+            task.wait(HOP_FAIL_WAIT)
+        end
+    end)
+end
+
+local function StartServerHopSequence()
+    if _G.ServerHopping then return end
+    _G.ServerHopping = true
+
+    task.spawn(function()
+        for i = _G.HopDelayTime, 1, -1 do
+            if not _G.Tweenfruit then 
+                _G.ServerHopping = false 
+                return 
+            end
+            if GetActiveFruitCount() > 0 then
+                _G.ServerHopping = false
+                return
+            end
+            if WindUI then
+                WindUI:Notify({ Title = "提示", Content = tostring(i) .. " 秒之後自動換服...", Duration = 1 })
+            end
+            task.wait(1)
+        end
+
+        if _G.Tweenfruit and GetActiveFruitCount() == 0 then
+            ServerCore:FindAndHop("random")
+        else
+            _G.ServerHopping = false
+        end
+    end)
+end
+
+----------------------------------------
+-- 管理員偵測核心
+----------------------------------------
+local function IsAdminPlayer(plr)
+    if not plr or plr == LocalPlayer then return false end
+    local name = plr.Name
+    local display = plr.DisplayName
+    local userId = plr.UserId
+
+    if AdminNameSet[name] or AdminNameSet[display] then
+        return true
+    end
+    if AdminIdSet[userId] then
+        return true
+    end
+    return false
+end
+
+local function GetAdminInServer()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if IsAdminPlayer(plr) then
+            return plr
+        end
+    end
+    return nil
+end
+
+local function TriggerAdminHop(adminPlr)
+    if _G.AdminHopTriggered then return end
+    _G.AdminHopTriggered = true
+
+    if _G.AdminNotifySelf and WindUI then
+        pcall(function()
+            WindUI:Notify({
+                Title = "⚠️ 偵測到管理員",
+                Content = tostring(adminPlr.Name) .. " (" .. tostring(adminPlr.UserId) .. ") 已進入，準備跳服...",
+                Duration = 6
+            })
+        end)
+    end
+
+    task.spawn(function()
+        -- 立刻停下正在進行的動作
+        _G.ServerHopping = false
+        _G.Tweenfruit = false
+        StopFruitFlight()
+
+        -- 倒數後跳服
+        for i = _G.AdminRejoinWait, 1, -1 do
+            if WindUI then
+                pcall(function()
+                    WindUI:Notify({
+                        Title = "管理員跳服倒數",
+                        Content = tostring(i) .. " 秒後離開此伺服器...",
+                        Duration = 1
+                    })
+                end)
+            end
+            task.wait(1)
+        end
+
+        VisitedServers[JobId] = true
+        _G.AdminHopTriggered = false -- 允許新伺服器再次觸發
+        ServerCore:FindAndHop("random")
+    end)
+end
+
+local function CheckAdminInServer()
+    if not _G.AdminAutoHop then return end
+    if _G.AdminHopTriggered then return end
+    local adminPlr = GetAdminInServer()
+    if adminPlr then
+        TriggerAdminHop(adminPlr)
+    end
+end
+
+-- 玩家進入時立刻檢查
+Players.PlayerAdded:Connect(function(plr)
+    if not _G.AdminAutoHop then return end
+    task.wait(0.3) -- 稍等一下確保資料齊全
+    if _G.AdminHopTriggered then return end
+    if IsAdminPlayer(plr) then
+        TriggerAdminHop(plr)
+    end
+end)
+
+-- 定時輪詢（確保遺漏或已在場的玩家也能抓到）
+task.spawn(function()
+    while true do
+        task.wait(3)
+        CheckAdminInServer()
+    end
+end)
+
+-- 進入新伺服器時重置旗標
+LocalPlayer.CharacterAdded:Connect(function()
+    _G.AdminHopTriggered = false
+end)
+
+-- 啟動時先檢查一次（若加入時管理員已在場）
+task.spawn(function()
+    task.wait(5)
+    CheckAdminInServer()
+end)
+
+----------------------------------------
+-- 撿果核心
+----------------------------------------
+local function getClosestFruit()
+    local char = LocalPlayer.Character
+    local pHRP = char and char:FindFirstChild("HumanoidRootPart")
+    if not pHRP then return nil end
+
+    local closestFruit = nil
+    local shortestDistance = math.huge
+
+    for _, v in ipairs(workspace:GetChildren()) do
+        if string.find(v.Name, "Fruit") and v:FindFirstChild("Handle") then
+            local dist = (v.Handle.Position - pHRP.Position).Magnitude
+            if dist < shortestDistance then
+                shortestDistance = dist
+                closestFruit = v.Handle
+            end
+        end
+    end
+    return closestFruit
+end
+
+-- 移動與飛果線程
+task.spawn(function()
+    local jumpTimer = 0
+
+    local function enterFlyMode(char)
+        local hum = char and char:FindFirstChildOfClass("Humanoid")
+        local hrp = char and char:FindFirstChild("HumanoidRootPart")
+        if hum then hum.PlatformStand = true; hum:ChangeState(Enum.HumanoidStateType.Physics) end
+        if hrp then SetNoCollide(char) end
+    end
+
+    RunService.RenderStepped:Connect(function()
+        if not _G.Tweenfruit then
+            if _G.IsMovingToFruit then
+                StopFruitFlight()
+                _G.IsMovingToFruit = false
+            end
+            return
+        end
+
+        local char = LocalPlayer.Character
+        if not char then return end
+
+        ForceStandUp()
+
+        local fruitHandle = getClosestFruit()
+
+        if fruitHandle then
+            _G.LastFruitTime = tick()
+            _G.ForceHopTriggered = false
+            _G.IsMovingToFruit = true
+
+            enterFlyMode(char)
+
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            local dist = hrp and (hrp.Position - fruitHandle.Position).Magnitude or math.huge
+
+            if dist <= 8 then
+                if hrp then
+                    hrp.CFrame = fruitHandle.CFrame + Vector3.new(0, 3, 0)
+                end
+                if _G.Fruit_LinearVelocity then
+                    _G.Fruit_LinearVelocity.VectorVelocity = Vector3.new(0, 0, 0)
+                end
+                doJump()
+            else
+                FlyToFruitLogic(fruitHandle.Position)
+
+                jumpTimer = jumpTimer + 1 / 60
+                if jumpTimer >= 0.3 then
+                    jumpTimer = 0
+                    doJump()
+                end
+            end
+        else
+            if _G.IsMovingToFruit then
+                StopFruitFlight()
+                _G.IsMovingToFruit = false
+                local hum = char:FindFirstChildOfClass("Humanoid")
+                if hum then
+                    hum.PlatformStand = false
+                    hum:ChangeState(Enum.HumanoidStateType.Running)
+                end
+                SetCollide(char)
+            end
+
+            if not _G.ServerHopping then
+                StartServerHopSequence()
+            end
+        end
+    end)
+end)
+
+-- 5分鐘無果防卡保護線程
+task.spawn(function()
+    while true do
+        task.wait(10)
+        if _G.Tweenfruit and not _G.ServerHopping then
+            local fruitHandle = getClosestFruit()
+            if fruitHandle then
+                _G.LastFruitTime = tick()
+                _G.ForceHopTriggered = false
+            else
+                if not _G.ForceHopTriggered and (tick() - _G.LastFruitTime) > 300 then
+                    _G.ForceHopTriggered = true
+                    StartServerHopSequence()
+                end
+            end
+        else
+            _G.LastFruitTime = tick()
+            _G.ForceHopTriggered = false
+        end
+    end
+end)
+
+-- 定時換服/重連計畫線程
+task.spawn(function()
+    local schedule = {
+        { wait = 600, label = "10 分鐘定時換服", mode = "hop" },
+        { wait = 300, label = "15 分鐘定時換服", mode = "hop" },
+        { wait = 300, label = "20 分鐘定時換服", mode = "hop" },
+        { wait = 600, label = "30 分鐘定時重連", mode = "rejoin" },
+    }
+    while true do
+        for _, entry in ipairs(schedule) do
+            task.wait(entry.wait)
+            if entry.mode == "hop" then
+                if GetActiveFruitCount() > 0 then
+                    WaitForAllFruitsPicked(300)
+                end
+                _G.ServerHopping = false
+                StopFruitFlight()
+                ServerCore:FindAndHop("random")
+            elseif entry.mode == "rejoin" then
+                if GetActiveFruitCount() > 0 then
+                    WaitForAllFruitsPicked(300)
+                end
+                task.wait(4)
+                _G.ServerHopping = false
+                StopFruitFlight()
+                ServerCore:TeleportToServer(JobId)
+            end
+        end
+    end
+end)
+
+--------------------------
+-- 分頁
+--------------------------
+local Tabs = {
+    Fruit = Window:Tab({ Title = "果實", Icon = "leaf" }),
+    Settings = Window:Tab({ Title = "設定", Icon = "settings" })
+}
+
+--------------------------
+-- 元件
+--------------------------
+Tabs.Fruit:Section({ Title = "Config" })
+
+Tabs.Fruit:Dropdown({
+    Title = "選擇陣營",
+    Values = { "海賊", "海軍" },
+    Value = _G.SelectTeam == "Pirates" and "海賊" or "海軍",
+    Callback = function(v)
+        _G.SelectTeam = v == "海賊" and "Pirates" or "Marines"
+        SelectTeam()
+    end,
+})
+
+Tabs.Fruit:Section({ Title = "果實" })
+
+Tabs.Fruit:Toggle({ 
+    Title = "ESP Fruit",
+    Value = _G.FruitESP,
+    Callback = function(v)
+        _G.FruitESP = v
+        if not _G.FruitESP then
+            clearAllEsp()
+        end
+    end
+})
+
+Tabs.Fruit:Toggle({ 
+    Title = "自動儲存果實",
+    Value = _G.AutoStoreFruit,
+    Callback = function(v)
+        _G.AutoStoreFruit = v
+    end
+})
+
+Tabs.Fruit:Toggle({ 
+    Title = "自動抽果",
+    Value = _G.AutoRollFruit,
+    Callback = function(v)
+        _G.AutoRollFruit = v
+    end
+})
+
+Tabs.Fruit:Toggle({
+    Title = "開始撿果",
+    Value = _G.Tweenfruit,
+    Callback = function(v)
+        _G.Tweenfruit = v
+    end
+})
+
+Tabs.Fruit:Slider({
+    Title = "換服倒數 (秒)",
+    Value = {
+        Min = 1,
+        Max = 10,
+        Default = _G.HopDelayTime,
+    },
+    Callback = function(v)
+        _G.HopDelayTime = v
+    end
+})
+
+Tabs.Settings:Section({ Title = "管理員防護" })
+
+Tabs.Settings:Toggle({
+    Title = "遇到管理員自動跳服",
+    Desc = "偵測到名單中的管理員進入伺服器時 自動切換到其他伺服器",
+    Value = _G.AdminAutoHop,
+    Callback = function(v)
+        _G.AdminAutoHop = v
+        if v then
+            _G.AdminHopTriggered = false
+        end
+    end
+})
+
+Tabs.Settings:Slider({
+    Title = "管理員跳服倒數 (秒)",
+    Desc = "偵測到管理員後多久才跳服",
+    Value = {
+        Min = 1,
+        Max = 30,
+        Default = _G.AdminRejoinWait,
+    },
+    Callback = function(v)
+        _G.AdminRejoinWait = v
+    end
+})
+
+Tabs.Settings:Toggle({
+    Title = "偵測到管理員時通知我",
+    Value = _G.AdminNotifySelf,
+    Callback = function(v)
+        _G.AdminNotifySelf = v
+    end
+})
+
+Tabs.Settings:Section({ Title = "重置腳本" })
+
+Tabs.Settings:Button({
+    Title = "將所有配置恢復初始",
+    Icon = "trash-2",
+    Desc = "標記為待重置 下次啟動腳本時改為初始設定",
+    Callback = function()
+        local ok = pcall(function()
+            if typeof(isfolder) == "function" and typeof(makefolder) == "function" and not isfolder(ConfigFolder) then
+                makefolder(ConfigFolder)
+            end
+            if typeof(writefile) == "function" then
+                writefile(ConfigFile, HttpService:JSONEncode(InitialConfig))
+            end
+        end)
+        
+        if ok then
+            WindUI:Notify({
+                Title = "配置等待重置",
+                Content = "下次啟動腳本後將完全生效 當前功能不受影響",
+                Duration = 4
+            })
+        else
+            WindUI:Notify({
+                Title = "重置失敗",
+                Content = "無法儲存設定檔 請確認執行器是否支援檔案寫入",
+                Duration = 4
+            })
+        end
+    end
+})
+
+Tabs.Settings:Section({ Title = "設定" })
+
+Tabs.Settings:Toggle({ 
+    Title = "換服後自動執行",
+    Desc = "切換伺服器時自動重新載入",
+    Value = _G.AutoExecute,
+    Callback = function(v)
+        _G.AutoExecute = v
+        
+        if _G.AutoExecute then
+            if queue_on_teleport then
+                writefile("Hub.file", "true")
+                queue_on_teleport(ScriptLoadstring)
+                WindUI:Notify({
+                    Title = "通知",
+                    Content = "已開啟自動執行",
+                    Duration = 3
+                })
+            else
+                WindUI:Notify({
+                    Title = "支援錯誤",
+                    Content = "你目前的注入器不支援",
+                    Duration = 3
+                })
+            end
+        else
+            if queue_on_teleport and isfile("Hub.file") then
+                delfile("Hub.file")
+            end
+            WindUI:Notify({
+                Title = "通知",
+                Content = "已關閉自動執行",
+                Duration = 3
+            })
+        end
+    end
+})
+
+Tabs.Settings:Keybind({ 
+    Title = "快捷鍵", 
+    Desc = "可更改", 
+    Value = _G.CurrentKey,
+    Callback = function(v)
+        _G.CurrentKey = v
+        
+        if not _G.KeyDisabled then
+            Window:SetToggleKey(Enum.KeyCode[v])
+        end
+    end
+})
+
+Tabs.Settings:Toggle({
+    Title = "停用快捷鍵",
+    Desc = "開啟後將禁用快捷鍵",
+    Value = _G.KeyDisabled,
+    Callback = function(state)
+        _G.KeyDisabled = state
+        
+        if state then
+            Window:SetToggleKey(nil)
+        else
+            Window:SetToggleKey(Enum.KeyCode[_G.CurrentKey])
+        end
+    end
+})
+
+-- 初始化狀態
+task.spawn(function()
+    task.wait()
+
+    -- 自動執行
+    if _G.AutoExecute then
+        if queue_on_teleport then
+            if not isfile("Hub.file") then
+                writefile("Hub.file", "true")
+            end
+
+            queue_on_teleport(ScriptLoadstring)
+        end
+    else
+        if queue_on_teleport and isfile("Hub.file") then
+            delfile("Hub.file")
+        end
+    end
+end)
