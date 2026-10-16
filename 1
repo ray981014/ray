@@ -223,20 +223,10 @@ _G.FTP2_Enabled = false
 _G.FTP2_FlightConn = nil
 _G.FTP2_PlayerLeaveConn = nil
 _G.FTP2_Blacklist = {}
-_G.FTP2_HasTriggeredHop = false
-_G.FTP2_TimeoutLimit = 120
-
-_G.FTP2_HistoryWindow = 0.35
-_G.FTP2_ClearTimeout = 10
-_G.FTP2_FlySpeed = 170
-_G.FTP2_HeightOffset = 30
-_G.FTP2_OrbitRadius = 50
-_G.FTP2_OrbitInterval = 0.016
-_G.FTP2_LowHpLockPercent = 30
 _G.FTP2_CurrentTarget = nil
-_G.FTP2_TargetLockTime = 0        -- 已累積的鎖定時間（僅在實際交戰時累加）
-_G.FTP2_TargetLockTick = 0        -- 上一幀時間，用於計算鎖定時間的累加量
-_G.FTP2_LastSkillCastTime = 0     -- 最近一次實際施放技能的時間
+_G.FTP2_TargetLockTime = 0
+_G.FTP2_TargetLockTick = 0
+_G.FTP2_LastSkillCastTime = 0
 _G.TargetHistory = {}
 _G.FTP2_StartTime = 0
 _G.FTP2_FleeReturnPos = nil
@@ -261,7 +251,6 @@ _G.FTP2_SafeZonePositions = {
     }
 }
 
-local StartServerHop
 local IsSafeToHopCheck
 
 --自瞄
@@ -489,445 +478,228 @@ end)
 ----------------------------------------
 --功能核心邏輯
 ----------------------------------------
---自動換服
-local RegionValues = {
-    "Oregon",
-    "Florida",
-    "Texas",
-    "California",
-    "HongKong",
-    "Germany",
-    "Brazil",
-    "Singapore",
-}
 
-local function FormatNumber(n)
-    local num = math.floor(tonumber(n) or 0)
-    local str = tostring(num)
-    local k
-    while true do
-        str, k = string.gsub(str, "^(-?%d+)(%d%d%d)", "%1,%2")
-        if k == 0 then break end
-    end
-    return str
-end
+-- 自動換服（改用第一份跳服邏輯）
+local ServerHopCache = { List = nil, Fetching = false }
 
-local function ParseServerInfo(text)
-    if type(text) ~= "string" or text == "" then
-        return nil
-    end
+local function FetchServerList(timeout)
+    local browser = ReplicatedStorage:FindFirstChild("__ServerBrowser")
+    if not browser then return nil end
 
-    local region = text:match("Region:%s*(.-)%s*%-%s*Players:") or text:match("Region:%s*(.-)%s*$")
-    local currentPlayers, maxPlayers = text:match("Players:%s*(%d+)%s*/%s*(%d+)")
-    local bountyText = text:match("Bounty:%s*([%d,]+)")
-
-    if not currentPlayers or not maxPlayers or not bountyText then
-        return nil
-    end
-
-    local bounty = tonumber((bountyText:gsub(",", "")))
-    if not bounty then
-        return nil
-    end
-
-    return {
-        Region = region or "Unknown",
-        Players = tonumber(currentPlayers),
-        MaxPlayers = tonumber(maxPlayers),
-        Bounty = bounty,
-        Raw = text,
-    }
-end
-
-local function IsServerAllowed(info)
-    if not info then
-        return false
-    end
-
-    local minP = tonumber(_G.HopMinPlayers) or 6
-    local maxP = tonumber(_G.HopMaxPlayers) or 7
-    local minB = tonumber(_G.HopMinBounty) or 3000000
-    local maxB = tonumber(_G.HopMaxBounty) or math.huge
-
-    if info.Players < minP or info.Players > maxP then
-        return false
-    end
-
-    -- 排除已滿伺服器（人數 >= 伺服器上限）
-    local maxPlayers = tonumber(info.MaxPlayers) or 0
-    if maxPlayers > 0 and info.Players >= maxPlayers then
-        return false
-    end
-
-    if info.Bounty < minB or info.Bounty > maxB then
-        return false
-    end
-
-    if _G.ServerRegion and _G.ServerRegion ~= "" then
-        local targetRegion = tostring(_G.ServerRegion):lower()
-        local serverRegion = tostring(info.Region):lower()
-        if not serverRegion:find(targetRegion, 1, true) then
-            return false
-        end
-    end
-
-    return true
-end
-
-local function BuildFilterText()
-    local bountyStr
-    local minB = tonumber(_G.HopMinBounty) or 3000000
-    local maxB = _G.HopMaxBounty
-
-    if maxB == math.huge or not maxB then
-        bountyStr = string.format("≥ %s", FormatNumber(minB))
-    else
-        bountyStr = string.format("%s ~ %s", FormatNumber(minB), FormatNumber(maxB))
-    end
-
-    return string.format(
-        "🌐 地區｜%s\n👥 人數｜%d ~ %d 人\n💰 賞金｜%s",
-        tostring(_G.ServerRegion),
-        tonumber(_G.HopMinPlayers) or 6,
-        tonumber(_G.HopMaxPlayers) or 7,
-        bountyStr
-    )
-end
-
-local function BuildServerInfoText(info, job)
-    return string.format(
-        "🌐 地區｜%s\n👥 人數｜%s / %s\n💰 賞金｜%s\n🆔 序號｜%s",
-        tostring(info.Region),
-        tostring(info.Players),
-        tostring(info.MaxPlayers),
-        FormatNumber(info.Bounty),
-        tostring(job)
-    )
-end
-
-local function SetParagraphDesc(paragraph, text)
-    if not paragraph then return end
-    if paragraph.SetDesc then
-        paragraph:SetDesc(text)
-    elseif paragraph.Set then
-        paragraph:Set({ Desc = text })
-    elseif paragraph.SetTitle then
-        paragraph:SetTitle(paragraph.Title or "當前篩選", text)
-    end
-end
-
-local function RefreshFilterParagraph()
-    SetParagraphDesc(FilterParagraph, BuildFilterText())
-end
-
-local function StopServerHop()
-    getgenv().IsServerHopping = false
-    getgenv().ShuttingDown = false
-
-    if getgenv().ServerHopHiddenGui then
-        getgenv().ServerHopHiddenGui = nil
-        local PlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
-        local serverBrowser = PlayerGui and PlayerGui:FindFirstChild("ServerBrowser")
-        if serverBrowser then
-            pcall(function()
-                serverBrowser.Enabled = false
-                if serverBrowser:FindFirstChild("Frame") then
-                    serverBrowser.Frame.Visible = true
+    local servers, pending = {}, 0
+    for page = 1, 100 do
+        pending = pending + 1
+        task.delay(page * 0.02, function()
+            local ok, result = pcall(function() return browser:InvokeServer(page) end)
+            if not ok then
+                local tries = 0
+                repeat
+                    task.wait(0.5)
+                    tries = tries + 1
+                    ok, result = pcall(function() return browser:InvokeServer(page) end)
+                until ok or tries >= 2
+            end
+            if ok and type(result) == "table" then
+                for job, info in pairs(result) do
+                    if type(info) == "table" then
+                        servers[job] = {
+                            Region = tostring(info.Region or "Unknown"),
+                            Count  = tonumber(info.Count) or 0,
+                            Bounty = tonumber(info.Bounty) or 0
+                        }
+                    end
                 end
-            end)
-        end
+            end
+            pending = pending - 1
+        end)
     end
 
+    local deadline = tick() + (timeout or 20)
+    while pending > 0 and tick() < deadline do task.wait(0.1) end
+    return servers
 end
 
-local function StartServerHop()
-    if getgenv().IsServerHopping == true then
-        return
+local function GetServerList()
+    if ServerHopCache.List then return ServerHopCache.List end
+    if ServerHopCache.Fetching then
+        local deadline = tick() + 25
+        while ServerHopCache.Fetching and tick() < deadline do task.wait(0.1) end
+        return ServerHopCache.List
     end
+    ServerHopCache.Fetching = true
+    local ok, servers = pcall(FetchServerList, 20)
+    ServerHopCache.Fetching = false
+    if ok and type(servers) == "table" and next(servers) then
+        ServerHopCache.List = servers
+    end
+    return ServerHopCache.List
+end
 
-    getgenv().IsServerHopping = true
-    getgenv().ShuttingDown = true
+local function MatchRegion(info)
+    if not info then return false end
+    local want = tostring(_G.ServerRegion or "")
+    if want == "" or want == "隨機" or want == "Random" then return true end
+    return tostring(info.Region or ""):lower():find(want:lower(), 1, true) ~= nil
+end
 
-    -- [換服超時] 開始換服後若未在3分鐘內成功換服：三海進二海、二海進三海，其餘重進伺服器
-    local hopStartTime = tick()
-    task.spawn(function()
-        while getgenv().IsServerHopping do
-            if tick() - hopStartTime >= 180 then
-                local placeId = game.PlaceId
-                if table.find({7449423635, 100117331123089}, placeId) then
-                    -- 三海 → 二海
+local function MatchServer(info)
+    if not info then return false end
+    if not MatchRegion(info) then return false end
+    local count = tonumber(info.Count) or 0
+    if count < (_G.HopMinPlayers or 1) or count > (_G.HopMaxPlayers or 12) then return false end
+    local bounty = tonumber(info.Bounty) or 0
+    return bounty >= (_G.HopMinBounty or 0) and bounty <= (_G.HopMaxBounty or math.huge)
+end
+
+local function MatchServerRelaxed(info)
+    return MatchRegion(info)
+end
+
+local function CollectMatches(servers, predicate)
+    local matches = {}
+    if type(servers) ~= "table" then return matches end
+    for job, info in pairs(servers) do
+        if job ~= game.JobId and predicate(info) then
+            table.insert(matches, {
+                Job    = job,
+                Region = info.Region,
+                Count  = info.Count,
+                Bounty = info.Bounty
+            })
+        end
+    end
+    return matches
+end
+
+local function PickServer(servers)
+    local matches = CollectMatches(servers, MatchServer)
+    if #matches > 0 then
+        return matches[math.random(1, #matches)], false
+    end
+    local relaxed = CollectMatches(servers, MatchServerRelaxed)
+    if #relaxed > 0 then
+        return relaxed[math.random(1, #relaxed)], true
+    end
+    return nil, false
+end
+
+local HopPhase = "idle"
+local HopPrepStartY = nil
+
+local function HopActive()
+    return HopPhase ~= "idle"
+end
+
+local HopAscendThread = nil
+local function StartHopAscend()
+    if HopAscendThread then return end
+    if not HopPrepStartY then
+        local hrp0 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        HopPrepStartY = hrp0 and hrp0.Position.Y or 0
+    end
+    HopAscendThread = task.spawn(function()
+        while HopActive() do
+            local char = LocalPlayer.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                if hrp.Position.Y - HopPrepStartY < 1500 then
                     pcall(function()
-                        ReplicatedStorage.Remotes.CommF_:InvokeServer("TravelDressrosa")
-                    end)
-                elseif table.find({4442272183, 79091703265657}, placeId) then
-                    -- 二海 → 三海
-                    pcall(function()
-                        ReplicatedStorage.Remotes.CommF_:InvokeServer("TravelZou")
+                        SetCharNoclip(char, true)
+                        MoveTo(hrp.Position + Vector3.new(0, 100, 0))
                     end)
                 else
-                    -- 其他(一海) → 執行重進伺服器
-                    pcall(function()
-                        game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer)
-                    end)
+                    StopMove()
                 end
-                getgenv().IsServerHopping = false
+            end
+            task.wait(0.1)
+        end
+        StopMove()
+        ClearFTPFlightComponents()
+        local char = LocalPlayer.Character
+        if char then SetCharNoclip(char, false) end
+        HopPrepStartY = nil
+        HopAscendThread = nil
+    end)
+end
+
+local HOP_LANDING_GRACE = 5
+local HOP_DELAY = 5
+local HopCooldownUntil = 0
+local HopWaitUntil = 0
+
+local function BeginHopMatch()
+    HopPhase = "matching"
+    task.spawn(function()
+        local servers = GetServerList()
+        local target = PickServer(servers)
+        if not target then
+            ServerHopCache.List = nil
+            servers = GetServerList()
+            target = PickServer(servers)
+        end
+
+        if not HopActive() then return end
+
+        if not target then
+            task.wait(3)
+            HopPhase = "idle"
+            HopCooldownUntil = tick() + HOP_LANDING_GRACE
+            return
+        end
+
+        if IsSafeToHopCheck and not IsSafeToHopCheck() then
+            HopPhase = "preparing"
+            return
+        end
+
+        local browser = ReplicatedStorage:FindFirstChild("__ServerBrowser")
+        if browser then
+            if not HopActive() or (IsSafeToHopCheck and not IsSafeToHopCheck()) then
                 return
             end
-            task.wait(5)
+            pcall(function() browser:InvokeServer("teleport", target.Job) end)
         end
+        task.wait(5)
+        HopPhase = "idle"
     end)
+end
 
-    -- [安全檢查] 必須安全且無PVP狀態才能開始換服
+local function DoServerHop()
+    if HopActive() then return end
+
+    HopPhase = "preparing"
+    HopPrepStartY = nil
+    StartHopAscend()
+
     if IsSafeToHopCheck and not IsSafeToHopCheck() then
-        while getgenv().IsServerHopping and IsSafeToHopCheck and not IsSafeToHopCheck() do
-            task.wait(1)
-        end
-        if not getgenv().IsServerHopping then
-            return
-        end
+        return
     end
 
-    local currentJobId = game.JobId
-    local triedJobs = {}
-    local ServerBrowserRemote = ReplicatedStorage:FindFirstChild("__ServerBrowser")
-
-    local directServers = nil
-    if ServerBrowserRemote then
-        for _, method in ipairs({ "getServers", "fetchServers", "getServerList", "fetch", "servers", "searchServers" }) do
-            local ok, result = pcall(function()
-                return ServerBrowserRemote:InvokeServer(method)
-            end)
-            if ok and type(result) == "table" then
-                local arr = result.Servers or result.ServerList or result.Data or result
-                if type(arr) == "table" then
-                    local parsed = {}
-                    for _, s in ipairs(arr) do
-                        if type(s) == "table" then
-                            local jobId = s.JobId or s.Job or s.id or s.teleportData
-                            if type(jobId) == "string" and tostring(jobId):find("-", 1, true) then
-                                table.insert(parsed, {
-                                    JobId = tostring(jobId),
-                                    Region = tostring(s.Region or s.RegionName or s.region or ""),
-                                    Players = tonumber(s.Players or s.PlayerCount or s.CurrentPlayers or s.currentPlayers) or 0,
-                                    MaxPlayers = tonumber(s.MaxPlayers or s.MaximumPlayers or s.maxPlayers) or 0,
-                                    Bounty = tonumber(s.Bounty or s.ServerBounty or s.bounty) or 0,
-                                })
-                            end
-                        end
-                    end
-                    if #parsed > 0 then
-                        directServers = parsed
-                        break
-                    end
-                end
-            end
-        end
-    end
-
-    local useHiddenGui = false
-    local Inside = nil
-    if not directServers then
-        local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
-        local serverBrowser = PlayerGui:FindFirstChild("ServerBrowser")
-
-        if not serverBrowser then
-            getgenv().IsServerHopping = false
-            return
-        end
-
-        useHiddenGui = true
-
-        serverBrowser.Enabled = true
-
-        -- 與列賞換服一致：顯示 ServerBrowser 介面
-        pcall(function()
-            if serverBrowser:FindFirstChild("Frame") then
-                serverBrowser.Frame.Visible = true
-            end
-        end)
-
-        local Filters = serverBrowser.Frame:FindFirstChild("Filters")
-        local SearchRegion = Filters and Filters:FindFirstChild("SearchRegion")
-        local TextBox = SearchRegion and SearchRegion:FindFirstChild("TextBox")
-        if TextBox then
-            TextBox.Text = _G.ServerRegion
-        end
-
-        local ScrollingFrame = serverBrowser.Frame.ScrollingFrame
-        local FakeScroll = serverBrowser.Frame.FakeScroll
-        Inside = FakeScroll and FakeScroll:FindFirstChild("Inside")
-
-        task.spawn(function()
-            while getgenv().IsServerHopping do
-                if ScrollingFrame then
-                    ScrollingFrame.CanvasPosition = Vector2.new(0, math.random(100, 7000))
-                end
-                task.wait(0.3)
-            end
-        end)
-    end
-
-    task.wait(0.5)
-
-    task.spawn(function()
-        while getgenv().IsServerHopping do
-            local candidate = nil
-
-            if directServers then
-                for _, s in ipairs(directServers) do
-                    if s.JobId ~= currentJobId and not triedJobs[s.JobId] then
-                        local info = {
-                            Region = s.Region,
-                            Players = s.Players,
-                            MaxPlayers = s.MaxPlayers,
-                            Bounty = s.Bounty,
-                        }
-                        if IsServerAllowed(info) then
-                            candidate = { info = info, job = s.JobId }
-                            break
-                        end
-                    end
-                end
-            elseif useHiddenGui and Inside then
-                for _, template in ipairs(Inside:GetChildren()) do
-                    if template.Name == "Template" then
-                        local joinButton = template:FindFirstChild("Join")
-                        local textLabel = template:FindFirstChild("TextLabel")
-                        local info = textLabel and ParseServerInfo(textLabel.Text)
-
-                        if joinButton and info and IsServerAllowed(info) then
-                            local job = joinButton:GetAttribute("Job")
-                            if job and tostring(job):find("-", 1, true) then
-                                job = tostring(job)
-                                if job ~= currentJobId and not triedJobs[job] then
-                                    candidate = { info = info, job = job }
-                                    break
-                                end
-                            end
-                        end
-                    end
-                end
-            end
-
-            if candidate and getgenv().IsServerHopping then
-                -- 換服前再次確認安全且無PVP狀態
-                if IsSafeToHopCheck and not IsSafeToHopCheck() then
-                    task.wait(1)
-                else
-                    pcall(function()
-                        ServerBrowserRemote:InvokeServer("teleport", candidate.job)
-                    end)
-
-                    triedJobs[candidate.job] = true
-                end
-            end
-
-            task.wait(5)
-        end
-    end)
+    HopPhase = "waiting"
+    HopWaitUntil = tick() + HOP_DELAY
 end
 
---自動列賞換服（核心跳服邏輯）
-local function StartBountyServerHop()
-    if getgenv().IsServerHopping == true then
-        return
-    end
-
-    getgenv().IsServerHopping = true
-    getgenv().ShuttingDown = true
-
-    local PlayerGui = LocalPlayer:FindFirstChild("PlayerGui")
-    if not PlayerGui or not PlayerGui:FindFirstChild("ServerBrowser") then
-        getgenv().IsServerHopping = false
-        return
-    end
-
-    PlayerGui.ServerBrowser.Enabled = true
-    task.wait(0.1)
-
-    local Filters = PlayerGui.ServerBrowser.Frame:FindFirstChild("Filters")
-    local SearchRegion = Filters and Filters:FindFirstChild("SearchRegion")
-    local TextBox = SearchRegion and SearchRegion:FindFirstChild("TextBox")
-
-    if not TextBox then
-        getgenv().IsServerHopping = false
-        return
-    end
-
-    TextBox.Text = _G.ServerRegion
-
-    -- 展開完整列表
-    local Full = Filters and Filters:FindFirstChild("Full")
-    local FullCheck = Full and Full:FindFirstChild("Check")
-    if FullCheck then
-        FullCheck.Text = "\226\156\148\239\184\143"
-        task.wait(0.1)
-    end
-
-    local ScrollingFrame = PlayerGui.ServerBrowser.Frame.ScrollingFrame
-    local FakeScroll = PlayerGui.ServerBrowser.Frame.FakeScroll
-    local Inside = FakeScroll.Inside
-
-    task.spawn(function()
-        while getgenv().IsServerHopping do
-            ScrollingFrame.CanvasPosition = Vector2.new(0, math.random(100, 7000))
-            task.wait(0.3)
-        end
-    end)
-
-    task.wait()
-
-    local currentJobId = game.JobId
-    local ServerBrowserRemote = ReplicatedStorage:WaitForChild("__ServerBrowser")
-
-    while getgenv().IsServerHopping do
-        for _, template in ipairs(Inside:GetChildren()) do
-            if template.Name == "Template" then
-                local joinButton = template:FindFirstChild("Join")
-                local textLabel = template:FindFirstChild("TextLabel")
-                local info = textLabel and ParseServerInfo(textLabel.Text)
-
-                if joinButton and info and IsServerAllowed(info) then
-                    local job = joinButton:GetAttribute("Job")
-                    if job and tostring(job):find("-", 1, true) then
-                        job = tostring(job)
-
-                        if job ~= currentJobId then
-                            WindUI:Notify({
-                                Title = "匹配到伺服器",
-                                Content = "嘗試跳服\n"
-                                    .. "地區: " .. tostring(info.Region) .. "\n"
-                                    .. "人數: " .. info.Players .. "/" .. info.MaxPlayers .. "\n"
-                                    .. "賞金: " .. FormatNumber(info.Bounty),
-                                Icon = "wind",
-                                Duration = 5
-                            })
-
-                            local success = pcall(function()
-                                ServerBrowserRemote:InvokeServer("teleport", job)
-                            end)
-                            if not success then
-                                local success2 = pcall(function()
-                                    ServerBrowserRemote:InvokeServer("teleport", job)
-                                end)
-                                if not success2 then
-                                    WindUI:Notify({
-                                        Title = "自動跳服",
-                                        Content = "跳服失敗\n\n請重新加入遊戲",
-                                        Icon = "wind",
-                                        Duration = 10
-                                    })
-                                end
-                            end
-                            task.wait(0.3)
-                        end
-                    end
-                end
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+        if HopPhase == "waiting" then
+            if IsSafeToHopCheck and not IsSafeToHopCheck() then
+                HopPhase = "preparing"
+            elseif tick() >= HopWaitUntil then
+                BeginHopMatch()
+            end
+        elseif HopPhase == "matching" and IsSafeToHopCheck and not IsSafeToHopCheck() then
+            HopPhase = "preparing"
+        elseif HopPhase == "preparing" and (not IsSafeToHopCheck or IsSafeToHopCheck()) then
+            if _G.FTP2_Enabled then
+                HopPhase = "waiting"
+                HopWaitUntil = tick() + HOP_DELAY
+            else
+                HopPhase = "idle"
             end
         end
-        task.wait(3)
     end
-end
+end)
 
 --Fast Attack
 local function IsAlive(char)
@@ -1368,7 +1140,7 @@ end
 
 task.spawn(function()
     while true do
-        if _G.AutoEnablePVP and not getgenv().IsServerHopping then
+        if _G.AutoEnablePVP and not HopActive() then
             local remote = GetCommF()
             if remote then 
                 pcall(function()
@@ -1656,7 +1428,7 @@ RunService.Heartbeat:Connect(function()
 end)
 
 -- ========= 統一移動系統（LinearVelocity 飛行，速度 170） =========
-local MOVE_SPEED = 170          -- 統一移動速度 (studs/s)
+local MOVE_SPEED = 170
 
 _G.FTP_LinearVelocity = nil
 _G.FTP_AntiGravity = nil
@@ -1685,7 +1457,6 @@ local function SetupFTPFlightComponents(hrp)
     lv.Parent = hrp
     _G.FTP_LinearVelocity = lv
 
-    -- 計算角色總質量以抵消重力
     local totalMass = 0
     local char = hrp.Parent
     if char then
@@ -1705,7 +1476,6 @@ local function SetupFTPFlightComponents(hrp)
     _G.FTP_AntiGravity = vf
 end
 
--- 統一移動函式：所有移動（追人、逃跑）皆透過此函式，以固定速度 170 朝指定位置飛行
 local function MoveTo(Pos)
     local char = LocalPlayer.Character
     if not char then return end
@@ -1722,7 +1492,6 @@ local function MoveTo(Pos)
     end
 end
 
--- 停止統一移動
 local function StopMove()
     if _G.FTP_LinearVelocity then
         _G.FTP_LinearVelocity.VectorVelocity = Vector3.zero
@@ -1772,13 +1541,10 @@ local function StartAutoFlee()
                 if hpPercent <= _G.AutoFleeHP then
                     if not wasFleeing then
                         wasFleeing = true
-                        -- 穿牆
                         SetCharNoclip(char, true)
                     end
-                    -- 統一移動：持續往上飛離
                     MoveTo(hrp.Position + Vector3.new(0, 100, 0))
                 elseif wasFleeing then
-                    -- 血量恢復，停止逃跑
                     wasFleeing = false
                     ClearFTPFlightComponents()
                     SetCharNoclip(char, false)
@@ -1786,7 +1552,6 @@ local function StartAutoFlee()
             end)
         end
 
-        -- 迴圈結束時恢復碰撞
         pcall(function()
             if wasFleeing then
                 SetCharNoclip(LocalPlayer.Character, false)
@@ -1991,42 +1756,21 @@ local function IsInCombatState()
     return FTP2_CombatCache ~= "NotInCombat"
 end
 
--- 換服安全檢查：必須安全且無PVP狀態才能換服
+-- 換服安全檢查
 IsSafeToHopCheck = function()
     if not LocalPlayer or not LocalPlayer:IsDescendantOf(Players) then
         return false
     end
 
-    -- 戰鬥中(賞金受威脅)不可換服
     if GetCombatStatus() == "BountyAtRisk" then
         return false
     end
 
-    -- 已開啟PVP時不可換服
     if CheckPVP(LocalPlayer) then
         return false
     end
 
     return true
-end
-
-local function CheckAndNotifyCombatStatus()
-    if _G.FTP2_HasTriggeredHop then return end
-
-    local status = GetCombatStatus()
-    
-    if status == "NotInCombat" then
-        _G.FTP2_HasTriggeredHop = true
-        task.spawn(function()
-            if StartBountyServerHop then StartBountyServerHop() end
-        end)
-    elseif status == "InCombatNoRisk" then
-        _G.FTP2_HasTriggeredHop = true
-        task.spawn(function()
-            if StartBountyServerHop then StartBountyServerHop() end
-        end)
-    elseif status == "BountyAtRisk" then
-    end
 end
 
 local function IsInSafeZone(plr)
@@ -2171,9 +1915,8 @@ local function IsTargetLowHP(plr)
     return percent < (_G.FTP2_LowHpLockPercent or 30)
 end
 
--- 鎖定時間計時條件：角色實際接近目標玩家，且正在施放技能（交戰中）
-local FTP2_ATTACK_RANGE = 80        -- 「實際接近目標」判定距離
-local FTP2_CAST_ACTIVE_WINDOW = 1.5 -- 視為「正在施放技能」的時間窗
+local FTP2_ATTACK_RANGE = 80
+local FTP2_CAST_ACTIVE_WINDOW = 1.5
 
 local function IsWithinAttackRange(plr)
     local myChar = LocalPlayer.Character
@@ -2184,15 +1927,12 @@ local function IsWithinAttackRange(plr)
 end
 
 local function IsCastingSkill()
-    -- 近期實際施放過技能
     if _G.FTP2_LastSkillCastTime and (os.clock() - _G.FTP2_LastSkillCastTime) <= FTP2_CAST_ACTIVE_WINDOW then
         return true
     end
-    -- 未使用自動技能時，以其他攻擊手段作為「交戰中」判定
     return _G.FastAttack or _G.FruitsM1Enable
 end
 
--- 只有實際接近目標且正在施放技能的期間，鎖定時間才會累加
 local function IsLockCountingActive(plr)
     return IsWithinAttackRange(plr) and IsCastingSkill()
 end
@@ -2362,26 +2102,23 @@ local function GetNearestPlayer()
     return nearestPlayer
 end
 
--- ========= 中轉傳送點（先飛往傳送點等待 2 秒，再前往玩家） =========
-local TRANSIT_WAIT_TIME = 2        -- 抵達傳送點後等待秒數
-local TRANSIT_ARRIVE_DIST = 1     -- 判定「抵達傳送點」的距離
+-- ========= 中轉傳送點 =========
+local TRANSIT_WAIT_TIME = 2
+local TRANSIT_ARRIVE_DIST = 1
 
 local TransitPoints = {
-    -- 一海
     World1 = {
         { point = Vector3.new(61177, -5, 1954),    dest = Vector3.new(3865, 8, -1926) },
         { point = Vector3.new(4056, -4, -1814),    dest = Vector3.new(61164, 5, 1819) },
         { point = Vector3.new(-4197, 1092, -362),  dest = Vector3.new(-6024, 5469, 2203) },
         { point = Vector3.new(-6022, 5469, 2215),  dest = Vector3.new(-4167, 1092, -347) },
     },
-    -- 二海
     World2 = {
         { point = Vector3.new(2283, 16, 910),      dest = Vector3.new(-287, 306, 599) },
         { point = Vector3.new(-288, 306, 593),     dest = Vector3.new(2285, 15, 904) },
         { point = Vector3.new(922, 125, 32843),    dest = Vector3.new(-6509, 83, -133) },
         { point = Vector3.new(-6501, 83, -125),    dest = Vector3.new(923, 125, 32853) },
     },
-    -- 三海
     World3 = {
         { point = Vector3.new(-5060, 317, -3193),  dest = Vector3.new(-12464, 376, -7566) },
         { point = Vector3.new(-12464, 376, -7566), dest = Vector3.new(-5060, 317, -3193) },
@@ -2402,15 +2139,13 @@ local function GetWorldTransitPoints()
     return {}
 end
 
--- 依「智慧距離」規劃中轉路線：回傳依序要飛往的傳送點位置（最多兩段）
 local function PlanTransitRoute(fromPos, targetPos)
     local portals = GetWorldTransitPoints()
     if #portals == 0 then return {} end
 
-    local bestCost = (targetPos - fromPos).Magnitude   -- 直飛作為基準
+    local bestCost = (targetPos - fromPos).Magnitude
     local bestIndices = {}
 
-    -- 單一中轉：目前位置 → 傳送點 → 目的地 → 目標玩家
     for i, p in ipairs(portals) do
         local cost = (p.point - fromPos).Magnitude + (p.dest - targetPos).Magnitude
         if cost < bestCost then
@@ -2419,7 +2154,6 @@ local function PlanTransitRoute(fromPos, targetPos)
         end
     end
 
-    -- 兩段中轉：目前位置 → 傳送點A → 目的地A(接近傳送點B) → 傳送點B → 目的地B → 目標玩家
     for i, p in ipairs(portals) do
         for j, q in ipairs(portals) do
             if i ~= j then
@@ -2441,11 +2175,9 @@ local function PlanTransitRoute(fromPos, targetPos)
     return waypoints
 end
 
--- 中轉狀態
-_G.FTP2_Transit = nil          -- { waypoints = {Vector3...}, index = 1, waiting = false, waitUntil = 0 }
-_G.FTP2_TransitTarget = nil    -- 已規劃中轉的目標玩家
+_G.FTP2_Transit = nil
+_G.FTP2_TransitTarget = nil
 
--- 執行中轉：飛往傳送點 → 抵達後等待 2 秒 → 前往下一段 / 目標玩家
 local function RunTransit()
     local transit = _G.FTP2_Transit
     if not transit then return end
@@ -2460,7 +2192,7 @@ local function RunTransit()
             transit.waiting = false
             transit.index = transit.index + 1
             if transit.index > #transit.waypoints then
-                _G.FTP2_Transit = nil   -- 中轉完成，改為飛往玩家
+                _G.FTP2_Transit = nil
             end
         end
         return
@@ -2472,7 +2204,7 @@ local function RunTransit()
         return
     end
 
-    MoveTo(wp)   -- 先飛行至選定的傳送點
+    MoveTo(wp)
     if (wp - myHRP.Position).Magnitude <= TRANSIT_ARRIVE_DIST then
         transit.waiting = true
         transit.waitUntil = os.clock() + TRANSIT_WAIT_TIME
@@ -2480,7 +2212,7 @@ local function RunTransit()
     end
 end
 
--- ========= 追人移動（LinearVelocity 飛行，使用 AutoBounty 預判） =========
+-- ========= 追人移動 =========
 _G.G_TeleportOffsetX = _G.G_TeleportOffsetX or 0
 _G.G_TeleportOffsetY = _G.G_TeleportOffsetY or 0
 _G.G_TeleportOffsetZ = _G.G_TeleportOffsetZ or 0
@@ -2493,14 +2225,11 @@ local function FlyToTargetLogic2(plr)
     local tgHRP = plr.Character:FindFirstChild("HumanoidRootPart")
     if not (myHRP and tgHRP) then return end
 
-    -- 保留原本 Auto Bounty 的預判位置
     local off = Vector3.new(_G.G_TeleportOffsetX, _G.G_TeleportOffsetY, _G.G_TeleportOffsetZ)
     local targetPos = (GetPredictedPosition2(plr) or tgHRP.Position) + off
 
-    -- 統一移動：以固定速度 170 朝預判位置飛行
     MoveTo(targetPos)
 
-    -- 面向目標(保留水平朝向)
     local lookAt = Vector3.new(tgHRP.Position.X, myHRP.Position.Y, tgHRP.Position.Z)
     if (lookAt - myHRP.Position).Magnitude > 0.1 then
         myHRP.CFrame = CFrame.new(myHRP.Position, lookAt)
@@ -2514,10 +2243,7 @@ local function FleeUpLogic()
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hum or not hrp or hum.Health <= 0 then return end
 
-        -- 穿牆：關閉碰撞，避免被建築卡住
         SetCharNoclip(char, true)
-
-        -- 統一移動：持續往上飛離
         MoveTo(hrp.Position + Vector3.new(0, 100, 0))
     end)
 end
@@ -2571,7 +2297,6 @@ local function StartFTPFlight2()
 
     _G.FTP2_Enabled = true
     table.clear(_G.FTP2_Blacklist)
-    _G.FTP2_HasTriggeredHop = false
     _G.FTP2_CurrentTarget = nil
     _G.FTP2_TargetLockTime = 0
     _G.FTP2_TargetLockTick = os.clock()
@@ -2601,7 +2326,7 @@ local function StartFTPFlight2()
     local cachedChar = nil
     local cachedParts = nil
 
-_G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
+    _G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
         if not _G.FTP2_Enabled then return end
 
         local currentChar = LocalPlayer.Character
@@ -2632,7 +2357,6 @@ _G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
             if fHRP and fHum and fHum.Health > 0 then
                 fHRP.CFrame = CFrame.new(_G.FTP2_FleeReturnPos)
                 _G.FTP2_FleeReturnPos = nil
-                -- 恢復後停止上飛
                 StopMove()
                 SetCharNoclip(fChar, false)
                 if WindUI then
@@ -2700,7 +2424,6 @@ _G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
             end
         end
 
-        -- 中轉規劃：目標變更時，依智慧距離重新選擇傳送點
         if _G.FTP2_CurrentTarget then
             if _G.FTP2_CurrentTarget ~= _G.FTP2_TransitTarget then
                 _G.FTP2_TransitTarget = _G.FTP2_CurrentTarget
@@ -2722,12 +2445,10 @@ _G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
         local lockNow = os.clock()
         if _G.FTP2_CurrentTarget then
             if _G.FTP2_CurrentTarget ~= oldTarget then
-                -- 更換目標：重新開始累積鎖定時間
                 _G.FTP2_TargetLockTime = 0
                 _G.FTP2_TargetLockTick = lockNow
             end
 
-            -- 只有實際接近目標且正在施放技能(交戰中)的期間，鎖定時間才會累加
             local dt = lockNow - (_G.FTP2_TargetLockTick or lockNow)
             _G.FTP2_TargetLockTick = lockNow
             if not lowHpLock and IsLockCountingActive(_G.FTP2_CurrentTarget) then
@@ -2750,7 +2471,6 @@ _G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
 
         if _G.FTP2_CurrentTarget then
             if _G.FTP2_Transit then
-                -- 中轉中：先飛往傳送點並等待，完成後才飛往玩家
                 RunTransit()
             else
                 FlyToTargetLogic2(_G.FTP2_CurrentTarget)
@@ -2759,7 +2479,9 @@ _G.FTP2_FlightConn = RunService.RenderStepped:Connect(function()
             FleeUpLogic()
 
             if os.clock() - _G.FTP2_StartTime >= 5 then
-                CheckAndNotifyCombatStatus()
+                if not HopActive() and (not IsSafeToHopCheck or IsSafeToHopCheck()) then
+                    DoServerHop()
+                end
             end
         end
     end)
@@ -3304,35 +3026,21 @@ local Tabs = {
 ----------------------------------------
 Tabs.Config:Section({ Title = "伺服器" })
 
-FilterParagraph = Tabs.Config:Paragraph({
-    Title = "當前篩選",
-    Desc = BuildFilterText(),
-})
-
-Tabs.Config:Dropdown({
-    Title = "選擇地區",
-    Values = RegionValues,
-    Value = _G.ServerRegion,
-    Callback = function(v)
-        _G.ServerRegion = v
-        RefreshFilterParagraph()
-        MarkConfigDirty()
-    end,
-})
-
 Tabs.Config:Button({
     Title = "開始跳服",
     Icon = "arrow-right-left",
-    Callback = function(v)
-        StartServerHop()
+    Callback = function()
+        DoServerHop()
     end,
 })
 
 Tabs.Config:Button({
     Title = "停止跳服",
     Icon = "circle-stop",
-    Callback = function(v)
-        StopServerHop()
+    Callback = function()
+        HopPhase = "idle"
+        StopMove()
+        ClearFTPFlightComponents()
     end,
 })
 
@@ -3629,9 +3337,6 @@ Tabs.Auto:Toggle({
     Callback = function(v)
         _G.FTP2_Enabled = v
         if v then
-            if _G.FTP_Enabled and type(StopFTPFlight) == "function" then 
-                StopFTPFlight()
-            end
             StartFTPFlight2()
             if WindUI then 
                 WindUI:Notify({ Title = "自動列賞", Content = "已開啟", duration = 3 }) 
