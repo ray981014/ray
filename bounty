@@ -1437,11 +1437,11 @@ end
 local HUD = {}
 
 local function SetupHUD()
-local RE_EXECUTE_URL = "https://rjr-loader.top/script/auto_bounty"
+local RE_EXECUTE_URL = "https://raw.githubusercontent.com/ray981014/ray/refs/heads/main/bounty"
 local SCRIPT_START_TICK = tick()
 local RunTimeCarry = tonumber(getgenv and getgenv().AutoBountyRunTime) or 0
 local BountyBase = nil
-local BountyPending = nil
+local BountyPending = nila
 local LastEarned = 0
 
 local function GetMyBounty()
