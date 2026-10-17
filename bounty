@@ -152,6 +152,7 @@ local LangMap = {
     ["Discord Webhook 完整地址"] = "Full Discord webhook URL",
     ["通知赏金阈值"] = "Notify Bounty Threshold",
     ["达到此赏金及以上时触发通知"] = "Trigger notification at this bounty or above",
+    ["固定 30M（不可自訂）"] = "Fixed 30M (not configurable)",
     ["通知冷却(秒)"] = "Notify Cooldown (s)",
     ["冷却期内不重复发送，避免刷屏"] = "No duplicate send within cooldown to avoid spam",
     ["测试发送通知"] = "Test Notification",
@@ -337,10 +338,10 @@ local Settings = {
     SelectTeam = "Pirates",
     MaxStaySeconds = 360,
 
-    -- DC 满赏通知
-    DCNotify = false,
+    -- DC 满赏通知（固定 30M，不可自訂）
+    DCNotify = true,
     DCWebhook = "",
-    DCNotifyThreshold = 1000000,
+    DCNotifyThreshold = 30000000,
     DCNotifyCooldown = 300,
 
     ConfigVersion = 3
@@ -383,6 +384,8 @@ local function ApplyConfigTable(data)
             end
         end
     end
+    -- 固定 30M，任何來源（舊設定檔 / getgenv().Config 注入）都無法改
+    Settings.DCNotifyThreshold = 30000000
     return true
 end
 
@@ -756,8 +759,7 @@ local function InstallMouseModuleHook()
         mt.__newindex = function(self, key, value)
             if key == "Hit" or key == "Target" then
                 store[key] = value
-            else
-                rawset(self, key, value)
+            else                rawset(self, key, value)
             end
         end
         setreadonly(mt, true)
@@ -2912,7 +2914,7 @@ Players.PlayerRemoving:Connect(function(plr)
 end)
 
 ------------------------------------------------------------------------
--- DC 满赏通知
+-- DC 满赏通知（固定 30M，不可自訂）
 ------------------------------------------------------------------------
 local DCNotify = {
     HttpService = game:GetService("HttpService"),
@@ -2950,14 +2952,14 @@ local function DCHttpPost(url, body)
     if type(syn) == "table" and type(syn.request) == "function" then
         return select(1, pcall(syn.request, opts))
     end
-    DCNotify.LastError = "执行器不支持 HTTP 请求 (request/http.request/syn.request 均不可用)"
+    DCNotify.LastError = "執行器不支援 HTTP 請求 (request/http.request/syn.request 均不可用)"
     return false
 end
 
 local function DCSend(bounty)
     local url = tostring(Settings.DCWebhook or "")
     if url == "" or not url:match("^https?://") then
-        DCNotify.LastError = "Webhook URL 无效或为空"
+        DCNotify.LastError = "Webhook URL 無效或為空"
         return false
     end
 
@@ -2969,17 +2971,17 @@ local function DCSend(bounty)
     local payload = {
         username = "Auto Bounty",
         content = string.format(
-            "🎉 **满赏通知** — 玩家 `%s` 当前赏金 **%s**\n时间：`%s` | PlaceId：`%s`",
+            "🎉 **滿賞通知（30M）** — 玩家 `%s` 當前賞金 **%s**\n時間：`%s` | PlaceId：`%s`",
             playerName, DCFormatNum(bounty), timeStr, placeId
         ),
         embeds = {{
-            title = "Bounty Reached",
-            description = string.format("玩家 **%s** 赏金已达 **%s**", playerName, DCFormatNum(bounty)),
+            title = "Bounty Reached 30M",
+            description = string.format("玩家 **%s** 賞金已達 **%s**", playerName, DCFormatNum(bounty)),
             color = 16729156,
             fields = {
                 { name = "玩家", value = playerName, inline = true },
-                { name = "赏金", value = DCFormatNum(bounty), inline = true },
-                { name = "时间", value = timeStr, inline = false },
+                { name = "賞金", value = DCFormatNum(bounty), inline = true },
+                { name = "時間", value = timeStr, inline = false },
                 { name = "PlaceId", value = placeId, inline = true },
                 { name = "JobId", value = jobId ~= "" and jobId or "-", inline = false },
             },
@@ -2989,13 +2991,13 @@ local function DCSend(bounty)
 
     local okEncode, body = pcall(function() return DCNotify.HttpService:JSONEncode(payload) end)
     if not okEncode then
-        DCNotify.LastError = "JSON 编码失败：" .. tostring(body)
+        DCNotify.LastError = "JSON 編碼失敗：" .. tostring(body)
         return false
     end
 
     local ok = DCHttpPost(url, body)
     if not ok then
-        if not DCNotify.LastError then DCNotify.LastError = "HTTP 请求失败" end
+        if not DCNotify.LastError then DCNotify.LastError = "HTTP 請求失敗" end
         return false
     end
     DCNotify.LastError = nil
@@ -3009,7 +3011,8 @@ local function DCNotifyTick()
     local bounty = DCGetBounty()
     if not bounty then return end
 
-    local threshold = tonumber(Settings.DCNotifyThreshold) or 1000000
+    -- 固定 30M，不可自訂（不讀 Settings.DCNotifyThreshold）
+    local threshold = 30000000
     local cooldown = tonumber(Settings.DCNotifyCooldown) or 300
     local now = os.time()
 
@@ -3042,7 +3045,7 @@ task.spawn(function()
 end)
 
 _G.__AutoBounty_DCTestSend = function()
-    local bounty = DCGetBounty() or tonumber(Settings.DCNotifyThreshold) or 0
+    local bounty = DCGetBounty() or 30000000
     local ok = DCSend(bounty)
     return ok, DCNotify.LastError
 end
@@ -3600,7 +3603,7 @@ local SYNC_ITEMS = {
     { "AutoSaveConfig", "toggle", function() return Settings.AutoSaveConfig end },
     { "DCNotify", "toggle", function() return Settings.DCNotify end },
     { "DCWebhook", "value", function() return Settings.DCWebhook end },
-    { "DCNotifyThreshold", "value", function() return Settings.DCNotifyThreshold end },
+    -- DCNotifyThreshold 已移除（固定 30M，不可自訂）
     { "DCNotifyCooldown", "value", function() return Settings.DCNotifyCooldown end }
 }
 
@@ -3764,13 +3767,13 @@ Tabs.Settings:Button({
 })
 
 ------------------------------------------------------------------------
--- DC 满赏通知 UI
+-- DC 满赏通知 UI（固定 30M，不可自訂）
 ------------------------------------------------------------------------
 AddSeparator(Tabs.Settings, T("DC 满赏通知"))
 
 UI["DCNotify"] = Tabs.Settings:Toggle({
     Title = T("启用 DC 满赏通知"),
-    Desc = T("达到指定赏金时向 Discord Webhook 发送消息"),
+    Desc = T("达到 30M 时向 Discord Webhook 发送消息"),
     Value = Settings.DCNotify,
     Callback = function(v)
         Settings.DCNotify = v
@@ -3817,15 +3820,10 @@ else
     })
 end
 
-UI["DCNotifyThreshold"] = Tabs.Settings:Slider({
+-- 通知賞金閾值：固定 30M，不可自訂（移除滑桿）
+Tabs.Settings:Section({
     Title = T("通知赏金阈值"),
-    Desc = T("达到此赏金及以上时触发通知"),
-    Value = { Min = 100000, Max = 100000000, Default = Settings.DCNotifyThreshold },
-    Step = 100000,
-    IsTextbox = true,
-    Callback = function(v)
-        Settings.DCNotifyThreshold = tonumber(v) or 1000000
-    end
+    Desc = T("固定 30M（不可自訂）")
 })
 
 UI["DCNotifyCooldown"] = Tabs.Settings:Slider({
