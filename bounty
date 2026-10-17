@@ -2922,6 +2922,7 @@ local DCNotify = {
     LastBounty = nil,
     Pending = false,
     LastError = nil,
+    Sent = false,   -- 已發送過就設 true，保證只通知一次
 }
 
 local function DCFormatNum(n)
@@ -3013,23 +3014,27 @@ local function DCNotifyTick()
 
     -- 固定 30M，不可自訂（不讀 Settings.DCNotifyThreshold）
     local threshold = 30000000
-    local cooldown = tonumber(Settings.DCNotifyCooldown) or 300
-    local now = os.time()
 
     if bounty < threshold then
         DCNotify.LastBounty = bounty
         return
     end
 
-    local crossedUp = (DCNotify.LastBounty == nil) or (DCNotify.LastBounty < threshold)
-    local cooldownOk = (now - DCNotify.LastSentAt) >= cooldown
+    -- 只通知一次：已經發過就不再發
+    if DCNotify.Sent then
+        DCNotify.LastBounty = bounty
+        return
+    end
 
-    if (crossedUp or cooldownOk) and not DCNotify.Pending then
+    local crossedUp = (DCNotify.LastBounty == nil) or (DCNotify.LastBounty < threshold)
+
+    if crossedUp and not DCNotify.Pending then
         DCNotify.Pending = true
         task.spawn(function()
             local ok = DCSend(bounty)
             if ok then
                 DCNotify.LastSentAt = os.time()
+                DCNotify.Sent = true   -- 只通知一次
             end
             DCNotify.Pending = false
         end)
@@ -3043,6 +3048,13 @@ task.spawn(function()
         pcall(DCNotifyTick)
     end
 end)
+
+_G.__AutoBounty_DCTestSend = function()
+    local bounty = DCGetBounty() or 30000000
+    local ok = DCSend(bounty)
+    return ok, DCNotify.LastError
+end
+
 
 _G.__AutoBounty_DCTestSend = function()
     local bounty = DCGetBounty() or 30000000
@@ -3603,8 +3615,6 @@ local SYNC_ITEMS = {
     { "AutoSaveConfig", "toggle", function() return Settings.AutoSaveConfig end },
     { "DCNotify", "toggle", function() return Settings.DCNotify end },
     { "DCWebhook", "value", function() return Settings.DCWebhook end },
-    -- DCNotifyThreshold 已移除（固定 30M，不可自訂）
-    { "DCNotifyCooldown", "value", function() return Settings.DCNotifyCooldown end }
 }
 
 for weaponTip, prefix in pairs({ Melee = "Melee", Sword = "Sword", ["Blox Fruit"] = "Fruit", Gun = "Gun" }) do
@@ -3826,16 +3836,6 @@ Tabs.Settings:Section({
     Desc = T("固定 30M（不可自訂）")
 })
 
-UI["DCNotifyCooldown"] = Tabs.Settings:Slider({
-    Title = T("通知冷却(秒)"),
-    Desc = T("冷却期内不重复发送，避免刷屏"),
-    Value = { Min = 30, Max = 3600, Default = Settings.DCNotifyCooldown },
-    Step = 30,
-    IsTextbox = true,
-    Callback = function(v)
-        Settings.DCNotifyCooldown = tonumber(v) or 300
-    end
-})
 
 Tabs.Settings:Button({
     Title = T("测试发送通知"),
