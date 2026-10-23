@@ -960,9 +960,51 @@ end
 
 LoadConfig()
 
+-- ===== 跳服後還原觸發功能 =====
+do
+	local pending = getgenv().PendingHopFeature
+	if pending then
+		getgenv().PendingHopFeature = nil
+
+		if pending == "FarmEliteH" then
+			_G.FarmEliteH = true
+			_G.FarmEliteHunt = true   -- 精英+跳服通常也一起開
+		elseif pending == "HopFindBerry" then
+			_G.HopFindBerry = true
+			_G.AutoCollectBerry = true
+		elseif pending == "AutoChestHop" then
+			_G.AutoChestHop = true
+			_G.AutoChest = true
+		elseif pending == "HopFindBoss" then
+			_G.HopFindBoss = true
+			_G.KillBoss = true
+		elseif pending == "HopHakiSword" then
+			_G.HopHakiSword = true
+		elseif pending == "KitsuneHop" then
+			_G.KitsuneHop = true
+			_G.KitsuneSpawn = true
+		end
+
+		task.spawn(function()
+			task.wait(3)
+			if Window and Window.Notify then
+				pcall(function()
+					Window:Notify({
+						Type = "good",
+						Title = "美團 HUB",
+						Message = "跳服完成，已自动恢复：" .. tostring(pending),
+						Duration = 4,
+					})
+				end)
+			end
+		end)
+	end
+end
+
 if _G.Language == "English" or _G.Language == "Chinese" then
 	RequestedLanguage = _G.Language
 end
+
 
 _G.Language = RequestedLanguage
 StatusRenameMap = { ["精英猎手"] = "精英怪" }
@@ -9435,8 +9477,10 @@ HopServer = function(arg)
 		getgenv().IsServerHopping = false
 		return
 	end
+
 	local now = tick()
 
+	-- 防抖：45 秒后才允许再跳（保留你的逻辑）
 	if getgenv().IsServerHopping and getgenv().ServerHopAt and now - getgenv().ServerHopAt > 45 then
 		getgenv().IsServerHopping = false
 	end
@@ -9446,52 +9490,128 @@ HopServer = function(arg)
 	end
 	getgenv().IsServerHopping = true
 	getgenv().ServerHopAt = now
-	local v = FetchServerList()
 
+	local v = FetchServerList()
 	if not v then
 		getgenv().IsServerHopping = false
 		Notify({ Type = "bad", Title = "美團 HUB", Message = T("未取到服务器列表"), Duration = 3 })
 		return
 	end
 
-	local v2 = PickServer(v)
+local function pick(level)
+    for _, srv in ipairs(v) do
+        local id = srv.id and tostring(srv.id)
+        local playing = tonumber(srv.playing) or 0
+        local maxP = tonumber(srv.maxPlayers) or 12
+        local okCount
+        if level == 2 then
+            okCount = playing >= 7 and playing < maxP - 1
+        elseif level == 1 then
+            okCount = playing >= 2 and playing < maxP - 1
+        else
+            okCount = playing < maxP
+        end
+        if id
+            and id ~= game.JobId
+            and not table.find(_G.JumpHistory, id)
+            and okCount
+        then
+            return id
+        end
+    end
+    return nil
+end
 
-	if not v2 then
-		_G.JumpHistory = {}
-		v2 = PickServer(v)
-	end
-
-	if not v2 then
-		getgenv().IsServerHopping = false
-		Notify({ Type = "warning", Title = "美團 HUB", Message = T("没有找到可用的服务器"), Duration = 5 })
-		return
-	end
+local v2 = pick(2) or pick(1) or pick(0)
+if not v2 then
+    -- 清歷史時保留最後 2 個，避免反覆挑同一個滿人服
+    local keep = {}
+    for i = math.max(1, #_G.JumpHistory - 1), #_G.JumpHistory do
+        keep[#keep + 1] = _G.JumpHistory[i]
+    end
+    _G.JumpHistory = keep
+    v2 = pick(1) or pick(0)
+end
+if not v2 then
+    getgenv().IsServerHopping = false
+    Notify({ Type = "warning", Title = "美團 HUB", Message = T("没有找到可用的服务器"), Duration = 5 })
+    return
+end
 
 	if flag3 and not EliteFeatureOn() then
 		getgenv().IsServerHopping = false
 		return
 	end
-	table.insert(_G.JumpHistory, v2)
 
+	table.insert(_G.JumpHistory, v2)
 	if #_G.JumpHistory > 100 then
 		table.remove(_G.JumpHistory, 1)
 	end
 
+	-- ===== 記錄這次跳服是哪個功能觸發的，跳過去後還原 =====
+	getgenv().PendingHopFeature = (
+		_G.FarmEliteH and "FarmEliteH" or
+		_G.HopFindBerry and "HopFindBerry" or
+		_G.AutoChestHop and "AutoChestHop" or
+		_G.HopFindBoss and "HopFindBoss" or
+		_G.HopHakiSword and "HopHakiSword" or
+		_G.KitsuneHop and "KitsuneHop" or
+		nil
+	)
+
 	Notify({ Title = "美團 HUB", Message = T("跳服中") .. " " .. v2, Duration = 3 })
 	HopQueueAutoExec()
 
-	if not pcall(function()
-		local serverBrowser = RS:FindFirstChild("__ServerBrowser") or RS:WaitForChild("__ServerBrowser", 3)
 
+	-- ===== 传送，并检测是否真的离开 =====
+	local sent = pcall(function()
+		local serverBrowser = RS:FindFirstChild("__ServerBrowser") or RS:WaitForChild("__ServerBrowser", 3)
 		if serverBrowser then
 			serverBrowser:InvokeServer("teleport", v2)
 		else
 			TeleportService:TeleportToPlaceInstance(game.PlaceId, v2, LocalPlayer)
 		end
-	end) then
+	end)
+
+	if not sent then
+		-- 移除坏 id，允许后续重挑
+		local idx = table.find(_G.JumpHistory, v2)
+		if idx then table.remove(_G.JumpHistory, idx) end
 		getgenv().IsServerHopping = false
 		Notify({ Type = "bad", Title = "美團 HUB", Message = T("跳服传送失败"), Duration = 4 })
+		-- 立即尝试再跳（递归一跳，防止卡死）
+		task.spawn(function()
+			task.wait(2)
+			HopServer(arg)
+		end)
+		return
 	end
+
+	-- 守护：发起传送后 12 秒内如果还留在原服（JobId 没变），视为失败，继续跳
+	local startJobId = game.JobId
+	local startPlaceId = game.PlaceId
+
+task.spawn(function()
+    local deadline = tick() + 25
+    while tick() < deadline do
+        task.wait(1)
+        -- 已成功離開：JobId 變了、PlaceId 變了、或角色被卸載
+        if game.JobId ~= startJobId
+            or game.PlaceId ~= startPlaceId
+            or not LocalPlayer.Character
+            or not LocalPlayer.Character.Parent
+        then
+            return
+        end
+    end
+    -- 25 秒還留在原地 → 視為失敗，移除該 id 後繼續跳
+    local idx = table.find(_G.JumpHistory, v2)
+    if idx then table.remove(_G.JumpHistory, idx) end
+    getgenv().IsServerHopping = false
+    Notify({ Type = "bad", Title = "美團 HUB", Message = "傳送失敗(可能滿人)，繼續跳服", Duration = 4 })
+    task.wait(1)
+    HopServer(arg)
+end)
 end
 
 EliteLastState = ""
